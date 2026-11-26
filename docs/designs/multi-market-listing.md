@@ -56,7 +56,7 @@ A "Fill from resell-agent" button on the sell pages, pulling drafts from the loc
 
 ## Recommended Approach
 
-Approach A, built behind a small marketplace-adapter seam so the ledger (B) and delist sync drop in later.
+Approach A. `publishDraftBundle` stays the single per-market dispatcher; the batch runner passes it a long-lived `browserSession` (E2, 2026-11-26). The ledger (B) and delist sync add branches there later.
 
 Shape:
 ```
@@ -69,23 +69,24 @@ Shape:
   brain: vision -> comps -> price -> per-market listing copy   (existing pipeline.ts)
         |
         v
-  DraftFile per item  (draft-file.ts; gains per-market fields: category, size, brand, condition, shipping)
-        |
-        +--> eBay adapter      : Media API photo upload -> inventory -> offer -> publish (no URL pasting)
-        +--> Depop adapter     : open sell form in saved profile -> fill all fields -> WAIT for Sam's Post -> capture URL
-        +--> Poshmark adapter  : same as Depop
+  DraftFile per item  (draft-file.ts; gains per-market fields: category, size, brand, condition, shipping;
+        |               every enabled market is drafted at intake, C7; SKU from the photo hash, E8)
+        v
+  publishDraftBundle(deps.browserSession)
+        +--> eBay  : Media API photo upload -> inventory -> offer -> publish (no URL pasting; result records env, E13)
+        +--> Depop : installed Chrome over CDP -> fill all fields -> WAIT for Sam's Post -> capture URL
         |
         v
-  publishResults merged per market (mergePublishResults), status shown in the GUI and `resell status`
+  publishResults merged per market (mergePublishResults), status shown in `resell status --batch` and the GUI
 ```
 
-Adapter seam, a minimum to keep later work open: `{ post(draft): Result; status?(id); delist?(id) }`. Only `post` is implemented now.
+Poshmark is deferred (D1). No adapter interface (E2).
 
 ### Assisted-fill contract
 
-**Browser identity.** The default is a dedicated persistent Playwright profile (`BROWSER_AUTOMATION_PROFILE_DIR`, one per market). Sam signs into it by hand once. The fallback, if the site blocks Playwright's Chromium at login, is to attach over CDP to a real Chrome launched with its own dedicated user-data-dir. Neither one is Sam's everyday Chrome profile. If both fail, switch to Approach C.
+**Browser identity (E3, E9, E11).** The runner starts Sam's installed Chrome with a dedicated profile at `%LOCALAPPDATA%\resell-agent\profiles\depop` (D5), `--remote-debugging-port=0` on 127.0.0.1, reads the port from `DevToolsActivePort`, and attaches with `playwright-core`'s `connectOverCDP`. Sam signs in by hand once; Google and Apple sign-in both work there. On attach, the runner closes every tab it did not open. It closes that Chrome when the session ends. This is never Sam's everyday Chrome profile. If Depop blocks it anyway, switch to Approach C.
 
-**Runner.** A single batch-runner module owns one long-lived browser context per market for the whole session. It opens one tab per item in that context, fills it, and leaves it open while Sam clicks. It writes each draft's result as its tab resolves. Both the CLI (`resell post-batch <dir>`) and the GUI server (inside Electron's main process) call the same module. A lock on the profile directory allows one runner at a time.
+**Runner.** `src/batch.ts` owns one `browserSession` for the whole Depop session and keeps up to 3 filled tabs open (`--tabs N`, E4). Each tab fills one item and waits while Sam clicks. A fill takes the item's draft lock only to write `filling` (with an attempt id) and again to merge its result (E7); the wait runs unlocked. The CLI (`resell post-batch <dir>`) calls it; the GUI batch view is deferred (D2). A per-market lock on the profile directory allows one runner at a time.
 
 **What changes in `src/browser-automation.ts`.**
 - Kept: the Playwright loading, the URL host checks and the success-URL check.
@@ -107,19 +108,19 @@ Adapter seam, a minimum to keep later work open: `{ post(draft): Result; status?
 
 Any state in which Post may have been clicked resolves to `unknown`, so it is never re-filled automatically. Two code changes carry this: `publishDraftBundle` in `src/publish.ts` must skip a prior `unknown` as well as a prior `published`, and `mergePublishResults` must keep a prior `unknown` over a new `skipped`, as it already does for `published`.
 
-**Poshmark halt rules.** The runner stops all Poshmark work and records the reason when it sees any of: a captcha or login challenge it didn't expect, a policy or warning notice, a removed listing, or an account restriction banner. After a halt, Poshmark falls back to manual listing (copying fields from the GUI) or to Approach C, and never to an automatic retry.
+**Halt rules (Depop now; Poshmark when it returns from TODOS.md).** The runner stops all work for a market and records the reason when it sees any of: a captcha or login challenge it didn't expect, a policy or warning notice, a removed listing, or an account restriction banner. After a halt, that market falls back to manual listing (copying fields from the GUI) or to Approach C, and never to an automatic retry.
 
 ### Batch layout and status
 
-- On disk: `batch/<item>/` holds that item's photos and its `draft.json` (a DraftFile). `batch/batch.json` indexes the items with each one's per-market status, rebuilt from the drafts.
-- `resell status --batch <dir>` lists every item and market in a table and flags the `unknown` and unmapped-field rows. The GUI gets a batch view built from the same index.
+- On disk: `batch/<item>/` holds that item's photos and its `draft.json` (a DraftFile); `batch/<item>/.resell/` holds its run log and error screenshots (E10). `batch/batch.json` indexes the items with each one's per-market status, rebuilt from the drafts.
+- `resell status --batch <dir>` lists every item and market in a table and flags the `unknown`, `held` and unmapped-field rows. The GUI batch view is deferred (D2).
 - A re-run of `post-batch` resumes only the items and markets whose state allows it, per the table above.
 
 Wireframe: none. UI work (the batch list and per-market post buttons in the existing GUI) is left to /plan-design-review on this doc.
 
 ## Open Questions
 
-- Will Playwright's Chromium get past Depop's and Poshmark's logins? Mitigation: sign in once by hand in the persistent profile, or attach to Sam's real Chrome over CDP with a dedicated user-data-dir. If both fail, switch to Approach C.
+- Will Depop accept a CDP-attached Chrome session long term? E3 uses installed Chrome with a dedicated profile, which avoids Google's block on automation-launched browsers. If Depop blocks it anyway, switch to Approach C.
 - Flat-pile grouping by vision is later work. This cut needs one subfolder per item.
 - Per-market category and size mapping: our attributes are free text, but the Depop and Poshmark pickers are fixed trees. They need a mapping step, model-assisted with a fallback that leaves the field for Sam.
 - Poshmark "sold elsewhere": when delist sync arrives, mark items not-for-sale instead of deleting them, given the removal crackdown.
@@ -133,17 +134,11 @@ Wireframe: none. UI work (the batch list and per-market post buttons in the exis
 
 ## Distribution Plan
 
-Personal use. It ships through the existing desktop app (`desktop/`, Electron) and the `resell` CLI on Sam's machine. No packaging or CI change is needed for this cut.
+Personal use. It ships through the existing desktop app (`desktop/`, Electron) and the `resell` CLI on Sam's machine. One packaging change: the app depends on `playwright-core` instead of `playwright`, and the electron-builder file list stops excluding it, so the installed app can run a Depop session (E6). No CI change.
 
 ## Next Steps
 
-1. eBay photo upload through the Media API, so eBay publishes from local photos alone.
-2. A per-market draft fields schema (category, size, brand, condition, shipping) in `DraftFile`, filled by the brain with a mapping step.
-3. The adapter seam in `publish.ts`, with eBay moved behind it.
-4. A Depop assisted-fill script (Sam's live market) in a persistent profile, with the success-URL capture.
-5. A Poshmark assisted-fill script.
-6. Batch runner (shared context, the state table above), `post-batch` and `status --batch`, then the GUI batch view.
-7. In parallel, Sam emails developers@depop.com about Partner API access.
+Build order is the Implementation Tasks list (T1 to T7), as amended by the eng review. Poshmark (D1) and the GUI batch view (D2) are in TODOS.md.
 
 ## What I noticed about how you think
 
@@ -367,7 +362,7 @@ Mode: SCOPE REDUCTION (Sam's choice; about 18 planned files was over the 15-file
 
 ### Scope after review
 
-- **In:** (1) eBay photo upload through the Media API. (2) Per-market fields on `ListingDraft`. (3) The adapter seam, eBay and Depop only. (4) Depop assisted fill. (5) A thin CLI batch: `resell post-batch <dir>` on one shared Depop context, plus `resell status --batch <dir>`. (6) `resell mark`, with GUI buttons on the row. (7) A run log and error screenshots. (8) Sam emails developers@depop.com.
+- **In:** (1) eBay photo upload through the Media API. (2) Per-market fields on `ListingDraft`. (3) A runner-owned `browserSession` passed through `publishDraftBundle`, eBay and Depop only (was "the adapter seam"; changed by E2). (4) Depop assisted fill. (5) A thin CLI batch: `resell post-batch <dir>` on one shared Depop context, plus `resell status --batch <dir>`. (6) `resell mark`, with GUI buttons on the row. (7) A run log and error screenshots. (8) Sam emails developers@depop.com.
 - **Deferred to TODOS.md:** Poshmark assisted fill (D1) and the GUI batch view (D2).
 
 ### Decision ledger
@@ -486,6 +481,13 @@ After this cut, Sam has: folder batch to eBay unattended, with uncertain items h
 | depop session | Item sold on eBay | Y | unit (mocked status) | `skipped` reason | Y |
 | intake rerun | New UUID wipes state | Y (O2) | unit | No change | Y |
 | ebay | Stranded unpublished offer | Y (O3) | unit (mocked API) | Published or named error | Y |
+| depop result write | eBay run holds the draft lock at the moment Sam submits | Y (E7, C2) | unit (lock contention) | Published after a short wait, or `unknown` with the URL in the run log | Y |
+| depop attach | Runner killed, Chrome left open with a postable tab | Y (E11) | fixture (kill, re-run) | Old tab closed; row `unknown` | Y |
+| depop wait | Item sells on eBay while its tab waits | Y (E12) | unit (mocked status) | Red "SOLD ON EBAY" banner in the tab | Y |
+| ebay rerun | Sandbox `published` hides a missing production listing | Y (E13) | unit | Production run publishes | Y |
+| intake | Error screenshot hashed into the SKU or uploaded | Y (E10) | unit | No change | Y |
+| depop preflight | Category-dependent field looks missing on a blank form | Y (E14) | fixture (two category paths) | No false halt; a real miss names the field | Y |
+| intake rerun | Deleted `draft.json` re-created with a new SKU | Y (E8) | unit | Existing eBay listing recorded, no second listing | Y |
 
 No CRITICAL GAP rows remain. The one critical gap (D3) is approved and fixed in the plan.
 
@@ -502,7 +504,7 @@ System:
                        │                                           └─ depop-fill script (per-site code)
                        v
           batch/<item>/draft.json  (DraftFile; per-market fields; states)   batch/batch.json (index)
-          batch/<item>/run.log + error-*.png (D4)
+          batch/<item>/.resell/run.log + error-*.png (D4, E10)
 ```
 
 Per-market state (browser markets):
@@ -525,32 +527,47 @@ Two phases:
 
 ## Implementation Tasks
 
-- [ ] **T1 (P1, human ~4h / CC ~30min)**: ebay. Upload photos through the Media API, and resume an existing unpublished offer.
-  - Surfaced by: Next Step 1, O3, P2.
+Amended by the eng review (2026-11-26); each task cites the decisions it carries.
+
+- [ ] **T1 (P1, human ~5h / CC ~35min)**: ebay. Upload photos through the Media API (sequential, back off on 429 with `Retry-After`, F6), and look up existing offers by SKU: resume an unpublished one (O3), record a published one as `published` (E8). Each eBay result records `env` (E13).
+  - Surfaced by: O3, P2, E8, E13, F6.
   - Files: `src/ebay/media.ts` (new), `src/ebay/sell.ts`, `src/publish.ts`, `src/gui.ts:723`, `src/config.ts`.
-  - Verify: unit tests with a mocked fetch, plus one real eBay publish from local photos.
+  - Verify: unit tests with a mocked fetch (upload, 401 scope error, 429 backoff, offer resume, published-offer found, env match and mismatch), plus one real eBay publish from local photos.
 - [ ] **T2 (P1, human ~3h / CC ~20min)**: types and brain. Add per-market fields on `ListingDraft` with a mapping step and an unmapped fallback.
-  - Surfaced by: Next Step 2, S2.
+  - Surfaced by: S2.
   - Files: `src/types.ts`, `src/brain/listing.ts`.
-  - Verify: unit tests for a valid map, malformed JSON and invalid category.
-- [ ] **T3 (P1, human ~3h / CC ~20min)**: publish. Pass a runner-owned `browserSession` through `publishDraftBundle`'s `deps` (no adapter interface, E2) and add the state rules: skip and keep `unknown` for browser markets only (D6), `not_posted`, `held`, and the exit code from merged state (O9).
-  - Surfaced by: S4, D6, O9.
+  - Verify: unit tests for a valid map, malformed JSON and invalid category; eval cases for the mapping prompt.
+- [ ] **T3 (P1, human ~4h / CC ~30min)**: publish and draft lock. Pass a runner-owned `browserSession` through `publishDraftBundle`'s `deps` (E2). State rules: skip and keep `unknown` for browser markets only (D6), `not_posted`, `held`, exit code from merged state (O9); eBay skips a prior `published` only on a matching `env` (E13). Draft lock: pid-and-time stale lock (O8); a Depop fill locks only to write `filling` with an attempt id and to merge its result after re-reading the file; the result write waits up to 30 s for the lock and otherwise logs the result and records `unknown` (E7, C2); a `mark` during the wait stands unless a submit was seen; a mismatched attempt id records `unknown` (E11).
+  - Surfaced by: S4, D6, O8, O9, E2, E7, E11, E13, C2.
   - Files: `src/publish.ts`, `src/draft-file.ts`.
-  - Verify: unit tests for the transition table.
-- [ ] **T4 (P1, human ~6h / CC ~45min)**: depop. Write the assisted-fill script, attached over CDP to installed Chrome running a dedicated `%LOCALAPPDATA%` profile with a localhost debug port (E3), with submit detection, the eBay-active check, the run log and error screenshots.
-  - Surfaced by: Next Step 4, D4, D5, O4.
-  - Files: `src/depop-fill.ts` (new), `src/browser-automation.ts`, `package.json` (`playwright` → `playwright-core`, drop its build exclusion, E6).
-  - Verify: unit tests; offline Playwright tests against a saved sell-form fixture page in `npm test`; a live selector preflight at session start that halts with the missing field named (E5); plus one live listing.
-- [ ] **T5 (P1, human ~4h / CC ~30min)**: cli. Add `post-batch` (two phases, idempotent intake, the held rule), `status --batch`, `mark` and a pid lock.
-  - Surfaced by: D2, D3, O1, O2, O5, O8.
+  - Verify: unit tests for the transition table, the re-read merge, mark-during-wait, lock contention at submit, and stale-lock break.
+- [ ] **T4 (P1, human ~8h / CC ~60min)**: depop. Assisted-fill script on installed Chrome over CDP: dedicated `%LOCALAPPDATA%` profile, random 127.0.0.1 debug port read from `DevToolsActivePort`, Chrome closed at session end (E3, E9); attach to an already-running profile Chrome or stop with "close the Depop Chrome window"; clear error when Chrome is missing (F5); close tabs the run did not open (E11); rolling window of 3 tabs, `--tabs N` (E4); two-stage selector preflight (E14); submit detection; O4 pre-fill eBay check plus re-check every 10 min and on refocus after 5+ min with a sold banner (E12); run log and error screenshots in `<item>/.resell/` (D4, E10). Remove the `*_BROWSER_FLOW` env flows and `ENABLE_BROWSER_AUTOMATION` gate (F4). Swap `playwright` for `playwright-core` and drop its build exclusion (E6).
+  - Surfaced by: D4, D5, O4, E3, E4, E6, E9, E10, E11, E12, E14, F4, F5.
+  - Files: `src/depop-fill.ts` (new), `src/browser-automation.ts`, `src/gui.ts:342`, `package.json`.
+  - Verify: unit tests; offline Playwright tests against a saved sell-form fixture covering two category paths in `npm test`; kill-during-wait then re-run leaves no pre-existing tab; one live listing; one fill from the packaged app.
+- [ ] **T5 (P1, human ~5h / CC ~35min)**: cli and batch. `post-batch` (two phases, O1; intake drafts every enabled market regardless of `--markets`, C7; creates `draft.json` only when absent, an unparseable one is an `error` row and never overwritten, O2; SKU from a hash of top-level photos, E8, E10; held when an inferred brand or `price.sampleSize < 3`, O5, C5), `status --batch`, `mark`.
+  - Surfaced by: D2, D3, O1, O2, O5, E8, E10, C5, C7.
   - Files: `src/cli.ts`, `src/draft-file.ts`, `src/batch.ts` (new).
-  - Verify: CLI spawn tests (help, empty dir exit 2, held exit 3, mark transitions).
+  - Verify: CLI spawn tests (help, empty dir exit 2, held exit 3, mark transitions); same photos give the same SKU; a screenshot in `.resell/` changes neither SKU nor uploads; E2E: night eBay phase then Depop phase on one folder, and an interrupted run recovered (Codex recommendation).
 - [ ] **T6 (P2, human ~1h / CC ~10min)**: gui. Add Mark posted / not posted buttons on GUI drafts, and make the TTL skip unresolved drafts.
   - Surfaced by: O7.
   - Files: `src/gui.ts`, `src/gui-client.ts`.
   - Verify: unit test of the TTL sweep, plus a manual click.
 - [ ] **T7 (P2, Sam, ~10min)**: Email developers@depop.com about Partner API access.
   - Surfaced by: Premise 5.
+
+### Worktree parallelization
+
+| Step | Modules touched | Depends on |
+|---|---|---|
+| T1 ebay | `src/ebay/`, `src/publish.ts` | — |
+| T2 brain | `src/types.ts`, `src/brain/` | — |
+| T3 publish + lock | `src/publish.ts`, `src/draft-file.ts` | T1 (shared `publish.ts`) |
+| T4 depop | `src/depop-fill.ts`, `src/browser-automation.ts`, `package.json` | T2 (per-market fields), T3 (`browserSession`, lock) |
+| T5 cli + batch | `src/cli.ts`, `src/batch.ts`, `src/draft-file.ts` | T1, T3 |
+| T6 gui | `src/gui.ts`, `src/gui-client.ts` | T3 |
+
+Lane A: T1 → T3 → T5 (shared `publish.ts`, `draft-file.ts`). Lane B: T2 (independent). Launch A and B; merge both; then T4 and T6 in parallel. Conflict flag: T3 and T5 both edit `src/draft-file.ts`; keep them in Lane A.
 
 ## Reality rows
 
@@ -805,21 +822,418 @@ Actual answer: A) Ship playwright-core (D6, Sam, 2026-11-26)
 Accepted scope: replace the `playwright` dependency with `playwright-core`; drop the `!node_modules/playwright-core/**` exclusion from the electron-builder file list (`package.json:73`); verify one Depop fill from the packaged app. Added to T4.
 History: first drafted in the interrupted session (2026-11-26 17:47), never asked.
 
+**Scope Challenge result:** scope accepted as-is (E1 kept the original arrangement; E2-E6 changed mechanisms, not features).
+
+### Section 1: Architecture
+
+Findings:
+- F1 [CRITICAL] (confidence: 9/10) `src/draft-file.ts:146` — `return withDraftLock(args.draftPath, async () => {` wraps the whole `publishDraftBundle` call (`:155`) and the result write (`:169-170`). Under E2 the Depop wait (no timeout, plan "Wait lifecycle") runs inside that call, so a draft stays locked for as long as its tab waits. An overnight `post-batch` that reaches that draft gets `draft_locked` (`:74-77`), and `resell mark` on it is refused. Codex carry-in: "waiting on Depop must not block the overnight eBay batch".
+- F2 [INFORMATIONAL] (confidence: 8/10) `src/publish.ts:131` — `sku: draftId ? stableGuiSku(draftId, guiSkuPrefix) : ...` with `draftId: randomUUID()` (`src/draft-file.ts:39`). The eBay SKU, and so O3's offer resume, is tied to a random id stored only in `draft.json`. If that file is deleted or re-created, the next run mints a new SKU and lists the item on eBay a second time. Codex carry-in: "re-running intake must not wipe double-post protection".
+- F3 [INFORMATIONAL] (confidence: 7/10) plan E3 — a remote-debugging port gives any local process full control of the signed-in Depop session while it is open. Chrome 136+ already refuses the port on the default profile, so E3's dedicated profile is required, not optional.
+- Carried forward as necessary implementation of approved contracts (no question): (a) if the profile's Chrome is already running, attach through its `DevToolsActivePort` file; if it is running without a debug port, stop with "close the Depop Chrome window and re-run" (E3); (b) an existing `draft.json` that fails to parse becomes an `error` row and is never overwritten (O2); (c) the E4 window runs up to 3 drafts at once on one `browserSession`, each under its own draft lock (E2, E4).
+- Factual corrections (no behavior change): the Recommended Approach, Assisted-fill contract, Open Questions, Distribution Plan and Next Steps sections are rewritten to match D1, E2, E3 and E6.
+
+Design-twice: recorded in the Scope Challenge (Shape 2 chosen, E2). Red flags on the chosen shape: none beyond F1 (the lock is the one shared state, owned by `draft-file.ts`).
+
+### E7: how long a Depop fill holds the draft lock
+Finding: F1, CRITICAL, confidence 9/10, `src/draft-file.ts:146`, eng review Section 1 + Codex carry-in.
+Plan baseline: O8 (pid-and-time stale lock) and "`filling` is written under the draft lock before the fill"; lock scope during the wait unspecified.
+Runtime evidence: today `postDraft` holds the lock across the whole publish (static read, `src/draft-file.ts:146-177`).
+Comparison grid:
+
+| Choice | Current | A | B |
+|---|---|---|---|
+| E7 lock scope during a Depop wait | held for the whole wait | short: lock to write `filling`, release, wait unlocked, re-lock, re-read the file, merge only that market's result, write; a `mark` made during the wait stands unless a submit was seen (then `unknown`) | held for the whole wait; eBay runs skip a locked draft as "in a Depop session" |
+| O8 stale-lock rule | approved | unchanged | unchanged |
+| Per-market profile lock (D5) | approved | unchanged (still one Depop runner at a time) | unchanged |
+| E8, E9 | pending | pending | pending |
+
+Question D7:
+D7 — E7: how long a Depop fill holds the item's draft lock
+Project/branch/task: resell-agent on main, eng review of docs/designs/multi-market-listing.md.
+ELI10: Each item's draft.json has a lock so two runs can't write it at once. Today the lock is held for the whole publish, and with Depop that includes waiting for you to click Post, which could be hours. While it's held, the overnight eBay run and `resell mark` get "draft locked" for that item. The fix: hold the lock only for the moments the file is written, and re-read the file before writing the Depop result so nothing else's change is lost.
+Stakes if we pick wrong: a Depop tab left open overnight makes the eBay run report false errors, and you can't mark the item.
+Recommendation: Short lock because no run should ever wait on your clicking.
+Completeness: A=9/10, B=6/10
+Pros / cons: see options.
+Net: a re-read-and-merge step vs. a lock that blocks other runs for hours.
+Header: Lock scope
+Options:
+A) Short lock (recommended)
+Lock only to write `filling` and to write the result; the wait runs unlocked; the result write re-reads draft.json and merges only the Depop entry; if you marked Depop meanwhile, your mark stands unless the tab saw a submit, which records unknown. (human ~2h / CC ~15min) ✅ The overnight eBay run and resell mark never wait on an open tab ✅ Each write merges into the latest file, so no other run's change is lost ❌ Two lock sections per fill, with a unit test for the re-read merge
+B) Long lock, eBay skips
+Keep the lock for the whole wait; post-batch treats a locked draft as "in a Depop session" and moves on. (human ~1h / CC ~10min) ✅ Smallest change to postDraft as it is today ✅ A locked draft reports a clear reason instead of a false error ❌ resell mark and any eBay retry for that item still wait until the tab closes
+
+State: approved
+Actual answer: A) Short lock (D7, Sam, 2026-11-26)
+Accepted scope: a Depop fill takes the draft lock only to write `filling` and again to write its result; the wait runs unlocked; the result write re-reads `draft.json` and merges only the Depop entry; a `mark` made during the wait stands unless the tab saw a submit, which records `unknown`. Unit test for the re-read merge and the mark-during-wait rule. Added to T3 and T5.
+History: new in the resumed review (2026-11-26).
+
+### E8: eBay SKU that survives a re-created draft
+Finding: F2, INFORMATIONAL, confidence 8/10, `src/publish.ts:131` + `src/draft-file.ts:39`, eng review Section 1 + Codex carry-in.
+Plan baseline: O2 (intake creates `draft.json` only when absent, otherwise resumes) and O3 (resume an existing unpublished offer for the SKU).
+Runtime evidence: SKU = `stableGuiSku(draftId)` with `draftId = randomUUID()`, stored only in `draft.json` (static read).
+Comparison grid:
+
+| Choice | Current | A | B |
+|---|---|---|---|
+| E8 batch SKU source | random `draftId` in `draft.json` | derived from a hash of the item folder's photos (sorted by name), written into `draft.json` at intake; a SKU that already has a published offer records `published` with its listing id | unchanged; status and the docs say a deleted `draft.json` loses double-post protection |
+| O2, O3 | approved | unchanged (O3 lookup now also catches published offers) | unchanged |
+| E9 | pending | pending | pending |
+
+Question D8:
+D8 — E8: keep the eBay SKU stable if draft.json is deleted
+Project/branch/task: resell-agent on main, eng review of docs/designs/multi-market-listing.md.
+ELI10: eBay ties each listing to a SKU, and re-running safely depends on reusing the same SKU. Today that SKU comes from a random id saved only in the item's draft.json. If that file gets deleted or rebuilt, the next run picks a new SKU and lists the same item on eBay twice. Deriving the SKU from the item's photos means a rebuilt draft finds the existing listing instead.
+Stakes if we pick wrong: one deleted file turns into a duplicate eBay listing you have to end by hand.
+Recommendation: SKU from photos because the photos are the item and survive a deleted draft.
+Completeness: A=9/10, B=5/10
+Pros / cons: see options.
+Net: a small hash step vs. trusting one file never to be deleted.
+Header: SKU
+Options:
+A) SKU from photos (recommended)
+Batch intake hashes the item folder's photos (sorted by name) into the SKU; if that SKU already has a published eBay offer, record published with its listing id. (human ~1h / CC ~10min) ✅ A deleted or rebuilt draft.json can't double-list on eBay ✅ Reuses O3's offer lookup, so it's one extra branch ❌ Reshooting or adding photos makes a new SKU, so treat that as a new item
+B) Keep random id
+No change; document that deleting draft.json loses double-post protection. ✅ No code change at all ✅ Reshooting photos keeps the same listing ❌ One deleted file means a duplicate eBay listing to end by hand
+
+State: approved
+Actual answer: A) SKU from photos (D8, Sam, 2026-11-26)
+Accepted scope: batch intake derives the eBay SKU from a hash of the item folder's photos (sorted by name) and writes it into `draft.json`; before creating an offer, a SKU that already has a published eBay offer records `published` with its listing id (extends O3's lookup). Reshot or added photos make a new SKU (a new item). Unit tests: same photos give the same SKU; a re-created draft with a published offer records `published` without a second listing. Added to T1 and T5.
+History: new in the resumed review (2026-11-26).
+
+### E9: the Depop Chrome debug port
+Finding: F3, INFORMATIONAL, confidence 7/10, plan E3, eng review Section 1 (security).
+Plan baseline: E3 approved "a localhost-only debug port"; port number and Chrome lifetime unspecified.
+Runtime evidence: none in code. Any local process that finds the port can drive the signed-in Depop session while Chrome runs with it.
+Comparison grid:
+
+| Choice | Current | A | B |
+|---|---|---|---|
+| E9 port and lifetime | unspecified | random port (`--remote-debugging-port=0`, read from the profile's `DevToolsActivePort`), bound to 127.0.0.1; the runner closes that Chrome when the session ends | fixed port 9222 on 127.0.0.1; Chrome stays open after the session for reuse |
+| E3 | approved A | unchanged | unchanged |
+
+Question D9:
+D9 — E9: how exposed the Depop Chrome's debug port is
+Project/branch/task: resell-agent on main, eng review of docs/designs/multi-market-listing.md.
+ELI10: To attach to your Chrome, the script opens a debug port on your own machine. Anything running on your PC that finds that port can control the Depop window, which is signed in to your account. A random port that only exists while the session runs shrinks that window; a fixed port left open is easier to find and stays open.
+Stakes if we pick wrong: a stray local program could post or change listings on your Depop account.
+Recommendation: Random port, closed after because it exposes the session only while you're using it.
+Completeness: A=9/10, B=6/10
+Pros / cons: see options.
+Net: re-opening Chrome each session vs. a known port left open.
+Header: Debug port
+Options:
+A) Random port, closed after (recommended)
+Chrome starts with a random localhost port read from its DevToolsActivePort file, and the runner closes it when the session ends. (human ~1h / CC ~10min) ✅ The port exists only while you're posting, at an unpredictable number ✅ No port conflicts with other tools that use 9222 ❌ Chrome reopens each session, a few seconds slower to start
+B) Fixed 9222, left open
+Chrome uses port 9222 and stays open after the session for the next one. ✅ The next session attaches instantly to the open Chrome ✅ Easy to attach by hand when debugging the script ❌ A well-known port stays open on your machine with Depop signed in
+
+State: approved
+Actual answer: A) Random port, closed after (D9, Sam, 2026-11-26)
+Accepted scope: the runner starts the Depop Chrome with `--remote-debugging-port=0` on 127.0.0.1, reads the port from the profile's `DevToolsActivePort`, and closes that Chrome when the session ends (normal end, Ctrl-C, or error). Added to T4.
+History: new in the resumed review (2026-11-26).
+
+Dispositions (Section 1): F1 accepted (E7, D7); F2 accepted (E8, D8); F3 accepted (E9, D9); carried-forward mechanics (a)-(c) accepted under E3, O2, E2/E4; factual corrections applied.
+
+### Section 2: Code quality
+
+- F4 [INFORMATIONAL] (confidence: 8/10) `src/browser-automation.ts` — the `*_BROWSER_FLOW` env JSON and `ENABLE_BROWSER_AUTOMATION` gate become dead once per-site scripts replace them (plan "What changes in browser-automation.ts"). Remove them, their env reads and the GUI pill (`src/gui.ts:342`) in the same change; no second way to drive a browser. Necessary implementation of the approved contract; no question.
+- F5 [INFORMATIONAL] (confidence: 7/10) plan E3 — Chrome not installed, or no Chrome at the expected path, must fail the Depop session up front with "install Chrome or set CHROME_PATH", not a Playwright stack trace. Necessary for E3; no question.
+- Shared code: no extraction proposed. The fill helpers live in `depop-fill.ts` only (one caller); the CEO S5 rule (plain code, no selector DSL) stands.
+
+Dispositions (Section 2): F4, F5 accepted as necessary implementation.
+
+### Section 3: Tests
+
+Framework: `node --test` over `dist/**/*.test.js` after `tsc` (`package.json` scripts.test). Existing coverage near the plan: `src/publish.test.ts`, `src/draft-file.test.ts`, `src/gui-server.test.ts`, `src/pipeline.test.ts` (merge, skip and post rules).
+
+```
+CODE PATHS                                              USER FLOWS
+[+] ebay/media.ts (T1)                                  [+] Night: post-batch <dir>
+  ├── upload photo            [GAP] mocked fetch          ├── [GAP] [→E2E] 10 folders -> 10 eBay listings, no URLs
+  ├── 401/scope error         [GAP] names the scope       ├── [GAP] uncertain draft -> held, exit 3
+  └── 429 throttle/backoff    [GAP]                       └── [GAP] empty dir exit 2; no-photo folder error row
+[+] ebay/sell.ts offer lookup (O3, E8)                  [+] Later: post-batch --markets depop
+  ├── unpublished offer -> resume [GAP]                   ├── [GAP] preflight halts on a missing selector (E5)
+  └── published offer -> record published [GAP]           ├── [GAP] [→E2E] fixture fill, Sam submits -> published+URL
+[+] batch.ts intake (O2, E8)                              ├── [GAP] tab closed -> not_posted
+  ├── absent -> create, SKU from photo hash [GAP]         ├── [GAP] Chrome closed/crash -> unknown
+  ├── present -> resume       [GAP]                       ├── [GAP] eBay sold -> skipped "sold on eBay" (O4)
+  └── present, unparseable -> error row, not overwritten [GAP]   └── [GAP] 4th item waits for a free slot (E4)
+[+] draft-file.ts lock (O8, E7)                         [+] mark
+  ├── stale pid lock broken   [GAP]                       ├── [GAP] mark during an open tab is not blocked (E7)
+  ├── re-read merge, Depop only [GAP]                     └── [GAP] --posted/--not-posted/--approve transitions (D3)
+  └── mark during wait stands unless submit -> unknown [GAP]
+[+] publish.ts state rules (D6, O9)                     LLM: [GAP] [→EVAL] per-market mapping prompt (T2):
+  ├── skip prior unknown (browser only) [★★ partial: publish.test.ts covers published skip]   valid map, malformed JSON,
+  ├── unknown kept over skipped [★★ partial: merge covers published]                          invalid category
+  └── exit 3 on unknown/held  [GAP]
+[+] depop-fill.ts (T4, E3, E9)
+  ├── attach via DevToolsActivePort [GAP]
+  ├── Chrome running without port -> clear stop [GAP]
+  └── Chrome closed at session end [GAP]
+
+COVERAGE: 2/33 paths partly tested | QUALITY: ★★:2 | GAPS: 31 (2 E2E, 1 eval)
+```
+
+Every gap above is required proof of an approved contract (D3, D6, O2-O9, E2-E9); no new test policy was proposed, so no test question. The Test Plan Artifact lists each with its value card.
+
+Tests made obsolete: the `*_BROWSER_FLOW` env-flow tests, if any exist in `src/browser-automation.test.ts`, retire with F4.
+
+Dispositions (Section 3): all gaps accepted as required proof.
+
+### Section 4: Performance
+
+- F6 [INFORMATIONAL] (confidence: 8/10) T1 — eBay's Media API allows 50 POSTs per 5 s per user (Scope Challenge, P2). A 10-item batch at the GUI's 12-photo cap (`src/gui.ts:36`, `GUI_MAX_PHOTO_COUNT = 12`) is up to 120 uploads. Upload sequentially and back off on HTTP 429 with the `Retry-After` header. Necessary for "publishes all 10 to eBay"; no question.
+- Vision at 20-40 s per item is fine overnight (CEO S7). Depop memory is bounded by E4's 3 tabs. No queries or caches in scope.
+
+Dispositions (Section 4): F6 accepted as necessary implementation.
+
+### Outside voice (Codex, gpt-6.2-astra, completed): 8 findings, VERDICT: FINDINGS
+
+Codex's summary recommendation: make a full overnight-to-Depop run and an interrupted-run recovery the acceptance tests.
+
+| # | Codex finding (severity) | Checked against | Disposition |
+|---|---|---|---|
+| C1 | D4 error screenshots sit in the item folder, so E8's photo hash can include them and they can be uploaded as listing photos (High) | plan D4 "saved next to the draft"; E8 | question E10 |
+| C2 | The short lock's second acquisition throws `draft_locked` at once (`src/draft-file.ts:73-78`), losing a confirmed post held in memory (High) | `withDraftLock` throws on `EEXIST`, no wait | carried forward under E7: the result write waits and retries the lock (bounded, 30 s) and, if it still fails, keeps the result in the run log and records `unknown`, never drops it |
+| C3 | A runner that dies while Chrome survives leaves an old, still-postable tab that a new runner inherits (High) | E3 attach path; E9 closes Chrome only on a clean or caught exit | question E11 |
+| C4 | O4's eBay stock check goes stale while a tab waits (High) | O4 checks once, before the fill | question E12 |
+| C5 | The hold rule can count comps that did not set the price (High) | `resolvePrice` falls back to anchors with `sampleSize: 0` (`src/brain/price.ts:129,137-139`) | carried forward under O5: hold when `price.sampleSize < 3`, not on `comps.length`; unit test with 3 non-pricing comps |
+| C6 | A sandbox `published` result makes a production run skip eBay (High) | `PlatformPublishResult` has no environment (`src/publish.ts:31-38`); skip on prior `published` (`:177`); `EBAY_ENV` defaults to sandbox (`src/config.ts:11`) | question E13 |
+| C7 | An eBay-only overnight intake drafts no Depop copy, so phase 2 fails (High) | `buildDraft` generates listings only for the platforms passed (`src/pipeline.ts:96-98`) | carried forward under O1: intake always drafts every enabled market (eBay and Depop); `--markets` limits only what publishes. Test: both phases in sequence on one folder |
+| C8 | E5's preflight of every selector on a blank form halts on category-dependent pickers (Medium) | plan T2 (category-specific size and attribute pickers) | question E14 (reopens E5) |
+
+### E10: where Depop error screenshots are saved (reopens D4's location)
+Finding: C1, CRITICAL, confidence 8/10, plan D4 + E8, Codex outside voice.
+Plan baseline: D4 approved "a tab screenshot on any fill error, saved next to the draft" (CEO review, Sam "Log + error screenshots").
+Runtime evidence: none in code yet; E8 hashes the item folder's photos.
+Comparison grid:
+
+| Choice | Current | A | B | C | D |
+|---|---|---|---|---|---|
+| E10 screenshot and log location | next to the draft (item folder) | `<item>/.resell/` (run log + screenshots); intake and the SKU hash read photos only from the item folder's top level | unchanged | investigate first | defer |
+| D4 log + screenshots | approved | still captured | unchanged | unchanged | unchanged |
+| E8 | approved | unchanged | unchanged | unchanged | unchanged |
+
+Question D10:
+D10 — E10: keep error screenshots out of the item's photos
+Project/branch/task: resell-agent on main, eng review of docs/designs/multi-market-listing.md.
+ELI10: When a Depop fill fails, the plan saves a screenshot next to the item's draft, which is the same folder as the item's photos. The new SKU-from-photos rule hashes that folder, so a screenshot could change the SKU, and it could even get uploaded to eBay as a listing photo. Moving logs and screenshots into a hidden .resell subfolder fixes both.
+Stakes if we pick wrong: a screenshot of a Depop error shows up in your eBay listing, or breaks the double-post protection.
+Recommendation: A) Apply because diagnostics never belong in the photo set.
+Note: options differ in kind, not coverage — no completeness score.
+Pros / cons: see options.
+Net: one subfolder vs. photos and diagnostics mixed together.
+Header: Screenshots
+Options:
+A) Apply: .resell subfolder (recommended)
+Run log and screenshots go to <item>/.resell/; intake and the SKU hash read only top-level photos. (human ~15min / CC ~5min) ✅ A screenshot can never change the SKU or reach a listing ✅ The photo folder stays exactly what you shot ❌ Diagnostics are one folder deeper when you look for them
+B) Keep next to the draft
+Leave D4 as approved. ✅ Screenshots sit right beside the draft, easy to find ✅ No change to the approved D4 wording ❌ Screenshots can change the SKU and get uploaded as photos
+C) Investigate first
+Prototype intake on a folder with a screenshot before choosing. ✅ Confirms the exact failure on real files ✅ Changes nothing until you've seen it ❌ Delays a choice whose fix is a few lines
+D) Defer
+Leave this unresolved for now. ✅ No plan change in this review ✅ Can be picked up during the build ❌ T4 and T5 start with the conflict still open
+
+State: approved
+Actual answer: A) Apply: .resell subfolder (D10, Sam, 2026-11-26)
+Accepted scope: the D4 run log and error screenshots are saved under `<item>/.resell/`; intake, the E8 SKU hash and the eBay upload list read photos only from the item folder's top level. Test: a screenshot in `.resell/` changes neither the SKU nor the upload list. D4 is otherwise unchanged.
+History: D4 (CEO review) placed them "next to the draft"; reopened by Codex C1 (2026-11-26).
+
+### E11: tabs left behind by a runner that died
+Finding: C3, CRITICAL, confidence 7/10, plan E3 attach path + E9, Codex outside voice.
+Plan baseline: E9 closes Chrome on a normal end, Ctrl-C or error; a killed process (crash, power loss) leaves Chrome open. Carried mechanic (a) re-attaches to an open Depop Chrome.
+Runtime evidence: none in code yet.
+Comparison grid:
+
+| Choice | Current | A | B | C | D |
+|---|---|---|---|---|---|
+| E11 orphan tabs on attach | unspecified (a new runner sees old filled tabs) | on attach, close every tab the runner did not open before filling; each fill writes an attempt id with `filling`; a result whose attempt id no longer matches the stored one records `unknown` | unchanged | investigate first | defer |
+| O8 stale `filling` -> `unknown` | approved | unchanged | unchanged | unchanged | unchanged |
+| E9 | approved | unchanged | unchanged | unchanged | unchanged |
+
+Question D11:
+D11 — E11: clean up tabs left by a crashed run
+Project/branch/task: resell-agent on main, eng review of docs/designs/multi-market-listing.md.
+ELI10: If the script is killed while Chrome stays open, its filled Depop tabs stay open too. The next run attaches to that Chrome and could fill the same item again in a new tab while the old one is still postable, so you could post it twice. The fix: the new run closes tabs it didn't open, and every fill gets an id so a result from an old tab can't overwrite a newer one.
+Stakes if we pick wrong: a crash followed by a re-run leaves two postable tabs for one item.
+Recommendation: A) Apply because a re-run should never inherit a postable tab.
+Note: options differ in kind, not coverage — no completeness score.
+Pros / cons: see options.
+Net: closing orphan tabs vs. risking a double Depop post after a crash.
+Header: Orphan tabs
+Options:
+A) Apply: close orphans (recommended)
+On attach, close every tab this run didn't open; each fill records an attempt id; a mismatched result records unknown. (human ~1h / CC ~10min) ✅ After a crash, no old tab can still be posted ✅ A late result from an old tab can't overwrite a newer fill ❌ Any half-finished edits in an orphan tab are lost
+B) Keep current
+No cleanup; rely on stale filling becoming unknown. ✅ No extra code in the attach path ✅ Orphan tabs stay open if you wanted them ❌ You can still post from an orphan tab while a new one exists
+C) Investigate first
+Reproduce a kill-during-wait and re-run before choosing. ✅ Confirms what Chrome actually keeps open ✅ Changes nothing until you've seen it ❌ Delays a fix for a crash path that's already plausible
+D) Defer
+Leave this unresolved for now. ✅ No plan change in this review ✅ Can be picked up during the build ❌ T4 starts without a crash-recovery rule
+
+State: approved
+Actual answer: A) Apply: close orphans (D11, Sam, 2026-11-26)
+Accepted scope: on attaching to the Depop Chrome, the runner closes every tab it did not open before filling anything; each fill writes an attempt id with `filling`; a result whose attempt id no longer matches the stored one records `unknown`. Test: kill during a wait, re-run, and no pre-existing tab survives. Added to T4.
+History: new from Codex outside voice (2026-11-26).
+
+### E12: eBay stock while a Depop tab waits
+Finding: C4, CRITICAL, confidence 7/10, plan O4, Codex outside voice.
+Plan baseline: O4 approved "Before each Depop fill, check that the eBay listing is still active" (Sam: "Check eBay before each fill").
+Runtime evidence: none in code yet; a tab can wait without limit (plan "Wait lifecycle").
+Comparison grid:
+
+| Choice | Current | A | B | C | D |
+|---|---|---|---|---|---|
+| E12 stock re-check during a wait | none after the fill | re-check every 10 min while a tab waits and when a tab regains focus after 5+ min; sold or ended puts a red "SOLD ON EBAY, don't post" banner in the tab; a failed check shows "couldn't confirm eBay stock" | unchanged | investigate first | defer |
+| O4 pre-fill check | approved | unchanged | unchanged | unchanged | unchanged |
+
+Question D12:
+D12 — E12: re-check eBay stock while a Depop tab is open
+Project/branch/task: resell-agent on main, eng review of docs/designs/multi-market-listing.md.
+ELI10: Before filling a Depop tab, the script checks the item hasn't sold on eBay. But a tab can sit open for an hour while you do other things, and the item can sell on eBay in that time. Re-checking while the tab waits, and putting a big red banner in the tab if it sold, stops you posting something you no longer have.
+Stakes if we pick wrong: you post an item on Depop that already sold on eBay, then have to cancel a buyer.
+Recommendation: A) Apply because the check is only useful if it's fresh when you click.
+Note: options differ in kind, not coverage — no completeness score.
+Pros / cons: see options.
+Net: a periodic eBay call per open tab vs. stale stock data.
+Header: Stock check
+Options:
+A) Apply: re-check + banner (recommended)
+Re-check every 10 min while a tab waits and when you return to it after 5+ min; sold shows a red banner, a failed check shows a warning. (human ~1h / CC ~10min) ✅ A sale on eBay shows up in the tab before you post ✅ At most 3 tabs, so at most 18 eBay calls an hour ❌ A banner warns but can't physically stop the Post click
+B) Keep current
+Check only before the fill, as O4 says. ✅ One eBay call per item, nothing periodic ✅ No code injected into the Depop page ❌ An item that sells while the tab waits can still be posted
+C) Investigate first
+Measure how long tabs actually wait in a real session first. ✅ Sizes the risk from real use ✅ Changes nothing until you've seen it ❌ The first real sessions run unprotected
+D) Defer
+Leave this unresolved for now. ✅ No plan change in this review ✅ Can be picked up during the build ❌ T4 starts with stale stock data possible
+
+State: approved
+Actual answer: A) Apply: re-check + banner (D12, Sam, 2026-11-26)
+Accepted scope: while a Depop tab waits, the runner re-checks the item's eBay listing every 10 min and when the tab regains focus after 5+ min since the last check; sold or ended injects a red "SOLD ON EBAY, don't post" banner into the tab; a failed check injects "couldn't confirm eBay stock". O4's pre-fill check is unchanged. Unit test with a mocked status sequence (active, then sold). Added to T4.
+History: new from Codex outside voice (2026-11-26).
+
+### E13: eBay results tied to sandbox or production
+Finding: C6, CRITICAL, confidence 9/10, `src/publish.ts:31-38` (no environment field) + `:177` (skip on prior `published`) + `src/config.ts:11` (sandbox default), Codex outside voice.
+Plan baseline: none; existing behavior skips eBay after any prior `published`.
+Runtime evidence: static read of the lines above.
+Comparison grid:
+
+| Choice | Current | A | B | C | D |
+|---|---|---|---|---|---|
+| E13 eBay result environment | not recorded; any prior `published` skips | each eBay result records `sandbox` or `production`; a prior `published` skips only when it matches the current `EBAY_ENV`; a result with no environment (written before this change) does not skip, and the E8/O3 published-offer lookup in the current environment catches a real existing listing | unchanged | investigate first | defer |
+| E8 published-offer lookup | approved | unchanged (now also the guard for old results) | unchanged | unchanged | unchanged |
+
+Question D13:
+D13 — E13: don't let a sandbox test block the real eBay listing
+Project/branch/task: resell-agent on main, eng review of docs/designs/multi-market-listing.md.
+ELI10: eBay defaults to its sandbox (test) environment. A draft that "published" in sandbox is saved as published, and the next run skips eBay, even after you switch to production. So the item never really goes live and the tool says it did. Recording which environment each result came from fixes that.
+Stakes if we pick wrong: items you tested in sandbox report "published" but never appear on real eBay.
+Recommendation: A) Apply because a test listing must never count as a real one.
+Note: options differ in kind, not coverage — no completeness score.
+Pros / cons: see options.
+Net: one extra field per result vs. silent missing listings after a sandbox test.
+Header: eBay env
+Options:
+A) Apply: record environment (recommended)
+Each eBay result stores sandbox or production; skip only on a match; old results without it rely on the published-offer lookup. (human ~1h / CC ~10min) ✅ A sandbox test can't hide a missing production listing ✅ Old drafts stay safe through the SKU lookup ❌ Old sandbox-published drafts re-check eBay once in production
+B) Keep current
+Any prior published skips eBay. ✅ No change to stored results ✅ Fewest eBay calls on re-runs ❌ A sandbox success silently blocks the real listing
+C) Investigate first
+Check how many existing drafts hold sandbox results first. ✅ Sizes the problem on your real drafts ✅ Changes nothing until you've seen it ❌ The batch build starts with the gap open
+D) Defer
+Leave this unresolved for now. ✅ No plan change in this review ✅ Can be picked up during the build ❌ T1 and T3 start with the gap open
+
+State: approved
+Actual answer: A) Apply: record environment (D13, Sam, 2026-11-26)
+Accepted scope: each eBay `PlatformPublishResult` records `env: "sandbox" | "production"`; a prior eBay `published` skips only when its `env` matches the current `EBAY_ENV`; a result without `env` does not skip, and the E8/O3 published-offer lookup in the current environment records an existing listing as `published` instead of creating a second one. Unit tests: sandbox-published then production run publishes; production-published then production run skips; legacy result with an existing production offer records `published`. Added to T1 and T3.
+History: new from Codex outside voice (2026-11-26).
+
+### E14: what the Depop preflight checks (reopens E5)
+Finding: C8, INFORMATIONAL, confidence 7/10, plan T2 (category-specific pickers) + E5, Codex outside voice.
+Plan baseline: E5 approved "a live selector preflight at Depop session start that checks every required selector before any tab fills and halts Depop with the missing field named" (D5).
+Runtime evidence: none in code; Depop's size and attribute pickers depend on the chosen category (plan T2, Open Questions).
+Comparison grid:
+
+| Choice | Current | A | B | C | D |
+|---|---|---|---|---|---|
+| E14 preflight scope | every required selector on the blank form (E5) | session start checks the controls present on a blank form (photos, title, description, price, category, condition); category-dependent controls are checked after the category is chosen in each tab, and a missing one is an `error` on that item naming the field | unchanged (E5 as approved) | investigate first | defer |
+| E5 unit + fixture tests | approved | unchanged; the fixture covers two category paths | unchanged | unchanged | unchanged |
+
+Question D14:
+D14 — E14: what the Depop session-start check looks for
+Project/branch/task: resell-agent on main, eng review of docs/designs/multi-market-listing.md.
+ELI10: You approved a check at the start of each Depop session that every form field exists before any tab fills. But on Depop, the size and attribute fields only appear after you pick a category, so on a blank form they look missing and the check would halt a healthy session. The fix: check the always-there fields at start, and check the category fields in each tab after the category is picked.
+Stakes if we pick wrong: every session halts on day one with "field missing" when nothing is broken.
+Recommendation: A) Apply because the start check can only see fields a blank form shows.
+Note: options differ in kind, not coverage — no completeness score.
+Pros / cons: see options.
+Net: a two-stage check vs. a start check that halts healthy sessions.
+Header: Preflight
+Options:
+A) Apply: two-stage check (recommended)
+Session start checks the always-present fields; category fields are checked in each tab after the category is picked, as an item error naming the field. (human ~30min / CC ~5min) ✅ A broken base form still halts before any tab fills ✅ No false halts from fields that appear later ❌ A broken category field shows up per item, not up front
+B) Keep E5 as approved
+Check every selector on the blank form at start. ✅ One check, one place in the code ✅ Matches the E5 wording as you approved it ❌ Halts healthy sessions on category-dependent fields
+C) Investigate first
+Map which Depop fields depend on category before choosing. ✅ Grounds the split in the real form ✅ Changes nothing until you've seen it ❌ The mapping is needed for T4 anyway
+D) Defer
+Leave this unresolved for now. ✅ No plan change in this review ✅ Can be picked up during the build ❌ T4 starts with a preflight rule known to misfire
+
+State: approved
+Actual answer: A) Apply: two-stage check (D14, Sam, 2026-11-26)
+Accepted scope: the Depop session-start preflight checks only controls present on a blank sell form (photos, title, description, price, category, condition) and halts Depop with the missing field named; category-dependent controls are checked in each tab after its category is chosen, and a missing one records `error` on that item naming the field. The E5 fixture covers two category paths. Supersedes E5's "every required selector" wording; E5's unit and fixture tests stand.
+History: E5 approved in D5 (2026-11-26) with "checks every required selector before any tab fills"; reopened by Codex C8 and amended by D14 (2026-11-26).
+
+Dispositions (Outside voice): C1 accepted (E10, D10); C2 carried forward under E7; C3 accepted (E11, D11); C4 accepted (E12, D12); C5 carried forward under O5; C6 accepted (E13, D13); C7 carried forward under O1; C8 accepted (E14, D14). Remaining disagreements: none.
+
+TODOS.md: no new TODO proposals from this review. The existing entries (Poshmark assisted fill, GUI batch view) are unchanged.
+
+### Eng reality rows
+
+REALITY: premise-table finding 9 claims checked against code (dispatch, lock, SKU, env, buildDraft platforms, price sampleSize, build exclusions, sandbox default, CLI surface); unverified=3 (Google's block on automation-launched browsers, Depop's category-dependent fields, the Media API multipart field name) src/draft-file.ts:146
+REALITY: already-done pass `git log origin/main --since=2026-11-25` on the named files shows only bae7e47, 6f85de9, d15baed, 62f124e; none implements Media API, Depop fill or batch src/publish.ts:175
+REALITY: surface-check finding `post-batch`, `status --batch`, `mark` and `--tabs` are absent from `resell help` (planned new); `status [--draft]` and `post` exist src/cli.ts:148
+REALITY: binding-decisions pass the only branch decision (CEO SCOPE_REDUCTION) is honored; E2 changes the CEO plan's "adapter seam" mechanism with Sam's answer (D2), not a default docs/designs/multi-market-listing.md:370
+REALITY: numbers pass 50 POSTs/5 s [measured: eBay createImageFromFile docs] docs/designs/multi-market-listing.md:633; 120 uploads [estimated: 10 items x 12-photo cap] src/gui.ts:36; 18 calls/h [estimated: 3 tabs x 6/h] docs/designs/multi-market-listing.md:1105; 30 s lock wait [estimated] docs/designs/multi-market-listing.md:540; 10 min and 5 min re-check [estimated] docs/designs/multi-market-listing.md:1105
+REALITY: deferred-asks pass no linked issue src/publish.ts:177
+REALITY: pr-count pass no `.gstack/ship-policy.json`; default one PR per wave, two lanes merge before T4 src/draft-file.ts:68
+
+### Completion summary (eng)
+
+- Step 0: Scope Challenge — scope accepted as-is
+- Reality rows: 7/7 applicable rows emitted, 3 unverified premises
+- Architecture Review: 3 issues found (F1-F3)
+- Code Quality Review: 2 issues found (F4, F5)
+- Test Review: diagram produced, 31 gaps identified (all required proof of approved contracts)
+- Performance Review: 1 issue found (F6)
+- NOT in scope: written (unchanged from CEO review)
+- What already exists: written (updated for E2)
+- TODOS.md updates: 0 items proposed to user
+- Failure modes: 0 critical gaps flagged (7 rows added)
+- Unresolved decisions: 0 in this review; the CEO review's 4 (P1, P2, P3, O6) are resolved here by E4, the Scope Challenge, E5/E14 and E6
+- Outside voice: codex (gpt-6.2-astra), completed, 8 findings (5 decided, 3 carried forward)
+- Parallelization: 2 lanes, 2 parallel / 4 sequential
+- Lake Score: 0/5 (every coverage-scored answer took the 9/10 recommended option; none was 10/10)
+
+Unresolved decisions that may bite you later: none.
+
+Approval readiness: PASS. Checked E1 (D1), E2 (D2), E3 (D3), E4 (D4), E5 as amended by E14 (D5, D14), E6 (D6), E7 (D7), E8 (D8), E9 (D9), E10 (D10), E11 (D11), E12 (D12), E13 (D13), E14 (D14) against Sam's answers in this session. Carried forward as necessary implementation of approved contracts: Section 1 (a)-(c), F4, F5, F6, C2 (E7), C5 (O5), C7 (O1).
+
 ## GSTACK REVIEW REPORT
 
 | Review | Trigger | Why | Runs | Status | Findings |
 |--------|---------|-----|------|--------|----------|
 | CEO Review | `/plan-ceo-review` | Scope & strategy | 1 | ISSUES OPEN | mode: SCOPE_REDUCTION, 0 critical gaps |
-| Outside Review | codex (plan-review, via CEO review) | Independent 2nd opinion | 1 | unavailable | missing recommendation marker; no completed external review (10 findings verified natively and resolved) |
-| Eng Review | `/plan-eng-review` | Architecture & tests (required) | 0 | — | — |
+| Outside Review | codex (plan-review, via eng review) | Independent 2nd opinion | 2 | completed | 8 findings (5 decided E10-E14, 3 carried forward); the CEO-phase run was unavailable (missing marker) |
+| Eng Review | `/plan-eng-review` | Architecture & tests (required) | 1 | ISSUES OPEN | 37 issues, 0 critical gaps |
 | Design Review | `/plan-design-review` | UI/UX gaps | 0 | — | — |
 | DX Review | `/plan-devex-review` | Developer experience gaps | 0 | — | — |
 
-- **OUTSIDE COVERAGE:** codex, plan-review phase, unavailable (the gate's recommendation marker was missing). Its 10 findings were checked against the code and resolved in the ledger (O1 to O10).
-- **VERDICT:** CEO review complete with 4 decisions left for the eng review. Eng review required.
+- **OUTSIDE COVERAGE:** codex, plan-review phase: CEO run unavailable (missing recommendation marker); eng run completed (gpt-6.2-astra), 8 findings, all dispositioned.
+- **CROSS-MODEL:** Codex and the native eng review agreed on the lock and double-post risks (native F1/F2, Codex C2/C6). Codex alone found the screenshot-in-hash, orphan-tab, stale-stock, sandbox-receipt, hold-measure, intake-markets and preflight issues.
+- **VERDICT:** Eng review complete: 14 decisions answered (E1-E14), 0 critical gaps; its 37 issues are mapped work in T1-T6, not open questions. The CEO review's 4 pending items (P1, P2, P3, O6) are resolved here. Design and DX reviews have not run.
 
-**UNRESOLVED DECISIONS:**
-- P1: the open-tab window size for the Depop session (owner: /plan-eng-review)
-- P2: the Media API host, scope, multipart contract and beta status (owner: /plan-eng-review)
-- P3: the Depop script test method: a fixture plus a live listing (owner: /plan-eng-review)
-- O6: packaging playwright in the desktop build (owner: /plan-eng-review)
+NO UNRESOLVED DECISIONS
