@@ -6,20 +6,25 @@
   "author": "resell-agent",
   "type": "module",
   "main": "desktop/main.mjs",
+  "bin": {
+    "resell": "dist/cli.js"
+  },
   "scripts": {
     "build": "tsc",
-    "draft": "node --env-file=.env dist/cli.js draft",
-    "outfit": "node --env-file=.env dist/cli.js outfit",
-    "gui": "node --env-file-if-exists=.env dist/cli.js gui",
+    "test": "tsc && node --test \"dist/**/*.test.js\"",
+    "draft": "node dist/cli.js draft",
+    "outfit": "node dist/cli.js outfit",
+    "status": "node dist/cli.js status",
+    "gui": "node dist/cli.js gui",
     "site-api": "node --env-file-if-exists=.env dist/site-api.js",
     "desktop": "npm run build && electron .",
     "desktop:dist": "npm run build && electron-builder --publish never",
     "desktop:dist:mac": "npm run build && electron-builder --mac --publish never",
     "desktop:dist:win": "npm run build && electron-builder --win --publish never",
-    "index": "node --env-file=.env dist/cli.js index",
-    "post": "node --env-file=.env dist/cli.js post",
-    "auth-url": "node --env-file=.env dist/cli.js auth-url",
-    "auth-exchange": "node --env-file=.env dist/cli.js auth-exchange"
+    "index": "node dist/cli.js index",
+    "post": "node dist/cli.js post",
+    "auth-url": "node dist/cli.js auth-url",
+    "auth-exchange": "node dist/cli.js auth-exchange"
   },
   "engines": {
     "node": ">=22.0.0"

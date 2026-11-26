@@ -5,7 +5,7 @@ import { join, resolve, sep } from "node:path";
 import { tmpdir } from "node:os";
 import { buildConsentUrl, exchangeCode } from "./ebay/auth.js";
 import { buildDraft } from "./pipeline.js";
-import { publishDraftBundle, validateHttpsImageUrls, type EbayPublishSettings, type PlatformPublishResult } from "./publish.js";
+import { mergePublishResults, publishDraftBundle, validateHttpsImageUrls, type EbayPublishSettings, type PlatformPublishResult } from "./publish.js";
 import { buildGuiScript, type GuiBootState } from "./gui-client.js";
 import { GUI_PLATFORMS, mergeEditableListingFields, validatePlatformSelection } from "./gui-validation.js";
 import { truthy } from "./env.js";
@@ -855,16 +855,6 @@ async function handleDraftEdit(req: IncomingMessage, draftId: string, res: Serve
   sendJson(res, 200, serializedRecord(record));
 }
 
-function mergedPublishResults(previous: PlatformPublishResult[], current: PlatformPublishResult[]): PlatformPublishResult[] {
-  const byPlatform = new Map(previous.map((result) => [result.platform, result]));
-  for (const result of current) {
-    const prior = byPlatform.get(result.platform);
-    if (result.status === "skipped" && prior?.status === "published") continue;
-    byPlatform.set(result.platform, result);
-  }
-  return [...byPlatform.values()];
-}
-
 async function handlePublish(req: IncomingMessage, boot: GuiBootState, res: ServerResponse): Promise<void> {
   const body = await parseJsonBody(req);
   applyGuiRuntimeSettings(body.settings);
@@ -903,7 +893,7 @@ async function handlePublish(req: IncomingMessage, boot: GuiBootState, res: Serv
       previousResults: record.publishResults,
       browser: { headless: !truthy(process.env.BROWSER_AUTOMATION_HEADFUL) },
     });
-    record.publishResults = mergedPublishResults(record.publishResults, result.results);
+    record.publishResults = mergePublishResults(record.publishResults, result.results);
     record.updatedAt = new Date().toISOString();
     await persistDraft(record);
     sendJson(res, 200, {

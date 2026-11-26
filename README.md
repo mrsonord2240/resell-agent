@@ -107,7 +107,8 @@ screenshots into.
 
 ## Setup
 
-1. Install and build: `npm install && npm run build` (rebuild after any code change)
+1. Install and build: `npm install && npm run build` (rebuild after any code change;
+   `npm test` builds and runs the tests)
 2. Create a `.env` (gitignored) with `ANTHROPIC_API_KEY` (or `ANTHROPIC_AUTH_TOKEN`
    for a gateway) and any eBay keys. Every other variable named in this README is
    optional.
@@ -329,18 +330,39 @@ no keys, offline). The same cream bag, two outings apart:
 
 <img src="docs/detect-11.svg" alt="Indexing: the cream shoulder bag saved into the reference library as reference 01" width="49%" /> <img src="docs/detect-12.svg" alt="Matched: the same cream shoulder bag recognised against the reference library at 0.91" width="49%" />
 
-Post the eBay listing:
+### Posting to several platforms
 
 ```
-npm run post -- --draft draft.json \
+npm run post -- --draft draft.json --platforms ebay,poshmark,depop \
   --images https://your-host/img1.jpg,https://your-host/img2.jpg \
   --location my-location-key \
   --fulfillment <id> --payment <id> --return <id>
 ```
 
-`--category <id>` is now optional, pass it only to override the auto-resolved one.
+`post` runs the same publish engine as the GUI's **Publish all**: eBay through the
+Sell API, Poshmark and Depop through the configured browser flows. Each platform's
+result is saved back into `draft.json`, so re-running `post` retries only what
+failed. eBay settings are saved too, and the four eBay IDs fall back to the
+`GUI_DEFAULT_*` values in `.env`. A platform reported `unknown` may already be
+live: check it before retrying. `npm run status -- --draft draft.json` shows where
+each platform stands.
 
-Image URLs must be publicly reachable (eBay pulls them). Host them somewhere first.
+`--category <id>` is optional, pass it only to override the auto-resolved one.
+eBay image URLs must be publicly reachable (eBay pulls them). Host them first.
+Edit titles, descriptions or prices by editing `draft.json` before posting.
+
+### For agents
+
+Every command takes `--json`: stdout then carries exactly one envelope,
+`{ "ok", "command", "data", "error": { "code", "message", "hint" } }`, and all
+logging goes to stderr. Call `node dist/cli.js <command> --json` directly (it loads
+`.env` itself); `npm run` prints a banner on stdout that breaks parsing.
+
+- `help --json` lists every command, flag and exit code.
+- Exit codes: `0` ok, `1` error, `2` usage, `3` publish incomplete (`data` still
+  holds the per-platform results).
+- `post` takes a lock on the draft, so two agents can't publish it at once.
+- `outfit` writes one postable `outfit-N.json` draft per detected piece.
 
 ## Design notes
 
@@ -396,7 +418,9 @@ Image URLs must be publicly reachable (eBay pulls them). Host them somewhere fir
 desktop/
   main.mjs          Electron shell that opens the local GUI in a window
 src/
-  cli.ts            command line: draft | gui | post | auth-url | auth-exchange
+  cli.ts            command line (human or --json): draft | outfit | status | post | index | gui | auth-url | auth-exchange | help
+  draft-file.ts     draft.json: stable id, photos, saved publish results, post lock
+  load-env.ts       loads ./.env for the CLI
   gui.ts            local dashboard: draft review + publish orchestration
   publish.ts        publish routing: eBay API + browser-flow adapters
   browser-automation.ts  optional Playwright flows for non-API platforms

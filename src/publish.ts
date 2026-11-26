@@ -151,6 +151,17 @@ function unknownMessage(platform: Platform, message: string): string {
   return `${platform} publish status is unknown; the request may have reached the platform. Verify the listing before retrying. ${message}`;
 }
 
+/** Fold a run's results into the stored ones; a "skipped" retry never hides an earlier success. */
+export function mergePublishResults(previous: PlatformPublishResult[], current: PlatformPublishResult[]): PlatformPublishResult[] {
+  const byPlatform = new Map(previous.map((result) => [result.platform, result]));
+  for (const result of current) {
+    const prior = byPlatform.get(result.platform);
+    if (result.status === "skipped" && prior?.status === "published") continue;
+    byPlatform.set(result.platform, result);
+  }
+  return [...byPlatform.values()];
+}
+
 export async function publishDraftBundle(
   opts: PublishRunOptions,
   deps: PublishDeps = {}
