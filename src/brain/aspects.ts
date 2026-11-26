@@ -1,11 +1,11 @@
 import { complete, parseJson } from "./anthropic.js";
-import type { AspectSpec } from "../ebay/taxonomy.js";
+import { conformAspects, type AspectSpec } from "../ebay/taxonomy.js";
 import type { ItemAttributes } from "../types.js";
 
 const SYSTEM = `You map a used item's known attributes onto eBay's item-specific aspects.
 Only fill an aspect if the attributes clearly support a value. Leave anything you'd
 have to guess OUT of the object — never invent brand, size, material, etc.
-For SELECTION aspects, choose only from the allowed values given.
+When an aspect lists values, use one of them exactly as written (e.g. "37.5", not "EU 37.5").
 Reply with ONLY a JSON object of { "<aspect name>": "<value>" }.`;
 
 // attributes + eBay's expected aspects -> { aspectName: [value] } for the Inventory API.
@@ -19,7 +19,7 @@ export async function fillAspects(
     .map(
       (a) =>
         `- ${a.name}${a.required ? " (required)" : ""}` +
-        (a.values.length ? ` — allowed: ${a.values.slice(0, 25).join(", ")}` : "")
+        (a.values.length ? ` — ${a.selectionOnly ? "allowed" : "eBay's values"}: ${a.values.slice(0, 25).join(", ")}` : "")
     )
     .join("\n");
 
@@ -45,5 +45,5 @@ export async function fillAspects(
     const name = known.get(k.toLowerCase());
     if (name && typeof v === "string" && v.trim()) out[name] = [v.trim()];
   }
-  return out;
+  return conformAspects(out, aspects);
 }

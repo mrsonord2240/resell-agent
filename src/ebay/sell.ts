@@ -1,6 +1,7 @@
 import { cfg } from "../config.js";
 import { getAppToken, getUserToken } from "./auth.js";
 import { uploadEbayImages } from "./media.js";
+import { conformAspects, getAspectSpecs } from "./taxonomy.js";
 import type { ListingDraft } from "../types.js";
 
 // eBay condition IDs -> Inventory API ConditionEnum. Source: eBay "Item condition
@@ -150,6 +151,17 @@ export async function publishListing(
     : await uploadEbayImages(opts.photoPaths ?? []);
   if (!imageUrls.length) throw new Error("eBay publish needs photos or public HTTPS image URLs.");
 
+  // Snap item specifics to the category's current value lists; drafts made
+  // earlier may hold values eBay now rejects ("EU 37.5" for "37.5").
+  let aspects = draft.itemSpecifics;
+  if (aspects && Object.keys(aspects).length) {
+    try {
+      aspects = conformAspects(aspects, await getAspectSpecs(opts.categoryId));
+    } catch (e) {
+      console.warn(`aspect check failed, sending item specifics as drafted: ${String(e)}`);
+    }
+  }
+
   // 1. inventory item (keyed by SKU)
   await ebayFetch(`/sell/inventory/v1/inventory_item/${encodeURIComponent(opts.sku)}`, {
     method: "PUT",
@@ -160,7 +172,7 @@ export async function publishListing(
         title: draft.title,
         description: draft.description,
         imageUrls,
-        ...(draft.itemSpecifics ? { aspects: draft.itemSpecifics } : {}),
+        ...(aspects ? { aspects } : {}),
       },
     }),
   });

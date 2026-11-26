@@ -33,12 +33,19 @@ let calls: string[] = [];
 let bodies: Record<string, unknown> = {};
 // Condition IDs the category allows; Heels (55793) on live eBay, 2026-11-26. null = metadata call fails.
 const APPAREL = [1000, 1500, 1750, 2990, 3000, 3010];
+let taxonomyUp = true;
 
 function stub(offers: unknown[], allowed: number[] | null = APPAREL): void {
   calls = [];
   bodies = {};
   const routes: Route[] = [
     (url) => (url.endsWith("/identity/v1/oauth2/token") ? Response.json({ access_token: "t", expires_in: 7200 }) : undefined),
+    (url) => (url.includes("/get_default_category_tree_id") ? Response.json({ categoryTreeId: "0" }) : undefined),
+    (url) => (url.includes("/get_item_aspects_for_category")
+      ? (taxonomyUp
+        ? Response.json({ aspects: [{ localizedAspectName: "EU Shoe Size", aspectConstraint: { aspectMode: "FREE_TEXT" }, aspectValues: [{ localizedValue: "37" }, { localizedValue: "37.5" }] }] })
+        : new Response("down", { status: 500 }))
+      : undefined),
     (url) => (url.includes("/get_item_condition_policies")
       ? (allowed
         ? Response.json({ itemConditionPolicies: [{ categoryId: "57988", itemConditions: allowed.map((id) => ({ conditionId: String(id) })) }] })
@@ -59,7 +66,7 @@ function stub(offers: unknown[], allowed: number[] | null = APPAREL): void {
   globalThis.fetch = (async (input: RequestInfo | URL, init: RequestInit = {}) => {
     const url = String(input);
     const method = init.method ?? "GET";
-    if (!url.endsWith("/oauth2/token") && !url.includes("/get_item_condition_policies")) calls.push(`${method} ${url.replace(/^https:\/\/[^/]+/, "")}`);
+    if (!url.endsWith("/oauth2/token") && !url.includes("/get_item_condition_policies") && !url.includes("/commerce/taxonomy/")) calls.push(`${method} ${url.replace(/^https:\/\/[^/]+/, "")}`);
     if (typeof init.body === "string") bodies[`${method} ${url.replace(/^https:\/\/[^/]+/, "")}`] = JSON.parse(init.body);
     // Like eBay: Node's fetch sends "Accept-Language: *" unless told otherwise, and eBay rejects that (errorId 25709).
     const lang = new Headers(init.headers).get("accept-language");
@@ -143,5 +150,16 @@ assert.equal(await conditionSent("like-new", GENERAL), "LIKE_NEW");
 assert.equal(await conditionSent("fair", GENERAL), "USED_GOOD");
 // If the policy lookup fails, fall back to the general mapping rather than block the publish.
 assert.equal(await conditionSent("fair", null), "USED_GOOD");
+
+// Item specifics are snapped to eBay's value list at publish time, which also fixes older drafts.
+const aspectsSent = async (up: boolean) => {
+  taxonomyUp = up;
+  stub([]);
+  await publishListing({ ...listing, itemSpecifics: { "EU Shoe Size": ["EU 37.5"] } }, { ...baseOpts, categoryId: up ? "55793" : "88888" });
+  taxonomyUp = true;
+  return (bodies["PUT /sell/inventory/v1/inventory_item/resale-sku-1"] as { product: { aspects: Record<string, string[]> } }).product.aspects;
+};
+assert.deepEqual(await aspectsSent(true), { "EU Shoe Size": ["37.5"] }); // eBay rejected "EU 37.5" (errorId 25129)
+assert.deepEqual(await aspectsSent(false), { "EU Shoe Size": ["EU 37.5"] }); // lookup down: sent as drafted
 
 console.log("sell.test ok");
