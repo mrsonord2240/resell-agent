@@ -28,7 +28,9 @@ function applyEnvFile(filePath) {
     ) {
       value = value.slice(1, -1);
     }
-    if (process.env[key] === undefined) process.env[key] = value;
+    // The .env file is the desktop app's config: it overrides whatever the
+    // launching shell happened to carry (a stale key there caused 401s).
+    process.env[key] = value;
   }
 }
 
