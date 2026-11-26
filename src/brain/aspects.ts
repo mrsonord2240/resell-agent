@@ -5,6 +5,9 @@ import type { ItemAttributes } from "../types.js";
 const SYSTEM = `You map a used item's known attributes onto eBay's item-specific aspects.
 Only fill an aspect if the attributes clearly support a value. Leave anything you'd
 have to guess OUT of the object — never invent brand, size, material, etc.
+Required aspects block the listing when missing: fill each one with the closest value
+the attributes support (e.g. a boucle or tweed upper is "Textile"), and leave it out only
+when the attributes give no basis at all.
 When an aspect lists values, use one of them exactly as written (e.g. "37.5", not "EU 37.5").
 Reply with ONLY a JSON object of { "<aspect name>": "<value>" }.`;
 

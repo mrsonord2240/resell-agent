@@ -145,22 +145,30 @@ export async function publishListing(
   }
   const resumeOfferId = unpublished[0]?.offerId;
 
+  // Snap item specifics to the category's current value lists (drafts made
+  // earlier may hold values eBay now rejects: "EU 37.5" for "37.5"), and stop
+  // before anything reaches eBay if a required one is missing.
+  let aspects = draft.itemSpecifics;
+  let specs: Awaited<ReturnType<typeof getAspectSpecs>> | null = null;
+  try {
+    specs = await getAspectSpecs(opts.categoryId);
+  } catch (e) {
+    console.warn(`aspect check failed, sending item specifics as drafted: ${String(e)}`);
+  }
+  if (specs) {
+    aspects = conformAspects(aspects ?? {}, specs);
+    const missing = specs.filter((s) => s.required && !aspects?.[s.name]?.length).map((s) => s.name);
+    if (missing.length) {
+      throw new Error(`eBay requires these item specifics for category ${opts.categoryId}: ${missing.join(", ")}. Add them to the draft, then publish again.`);
+    }
+    if (!Object.keys(aspects).length) aspects = undefined;
+  }
+
   // Upload only once we know a listing will be made; unused eBay images expire.
   const imageUrls = opts.imageUrls.length
     ? opts.imageUrls
     : await uploadEbayImages(opts.photoPaths ?? []);
   if (!imageUrls.length) throw new Error("eBay publish needs photos or public HTTPS image URLs.");
-
-  // Snap item specifics to the category's current value lists; drafts made
-  // earlier may hold values eBay now rejects ("EU 37.5" for "37.5").
-  let aspects = draft.itemSpecifics;
-  if (aspects && Object.keys(aspects).length) {
-    try {
-      aspects = conformAspects(aspects, await getAspectSpecs(opts.categoryId));
-    } catch (e) {
-      console.warn(`aspect check failed, sending item specifics as drafted: ${String(e)}`);
-    }
-  }
 
   // 1. inventory item (keyed by SKU)
   await ebayFetch(`/sell/inventory/v1/inventory_item/${encodeURIComponent(opts.sku)}`, {

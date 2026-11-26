@@ -34,6 +34,7 @@ let bodies: Record<string, unknown> = {};
 // Condition IDs the category allows; Heels (55793) on live eBay, 2026-11-26. null = metadata call fails.
 const APPAREL = [1000, 1500, 1750, 2990, 3000, 3010];
 let taxonomyUp = true;
+let requireUpper = false;
 
 function stub(offers: unknown[], allowed: number[] | null = APPAREL): void {
   calls = [];
@@ -43,7 +44,10 @@ function stub(offers: unknown[], allowed: number[] | null = APPAREL): void {
     (url) => (url.includes("/get_default_category_tree_id") ? Response.json({ categoryTreeId: "0" }) : undefined),
     (url) => (url.includes("/get_item_aspects_for_category")
       ? (taxonomyUp
-        ? Response.json({ aspects: [{ localizedAspectName: "EU Shoe Size", aspectConstraint: { aspectMode: "FREE_TEXT" }, aspectValues: [{ localizedValue: "37" }, { localizedValue: "37.5" }] }] })
+        ? Response.json({ aspects: [
+          { localizedAspectName: "EU Shoe Size", aspectConstraint: { aspectMode: "FREE_TEXT" }, aspectValues: [{ localizedValue: "37" }, { localizedValue: "37.5" }] },
+          ...(requireUpper ? [{ localizedAspectName: "Upper Material", aspectConstraint: { aspectMode: "FREE_TEXT", aspectRequired: true }, aspectValues: [{ localizedValue: "Textile" }] }] : []),
+        ] })
         : new Response("down", { status: 500 }))
       : undefined),
     (url) => (url.includes("/get_item_condition_policies")
@@ -161,5 +165,19 @@ const aspectsSent = async (up: boolean) => {
 };
 assert.deepEqual(await aspectsSent(true), { "EU Shoe Size": ["37.5"] }); // eBay rejected "EU 37.5" (errorId 25129)
 assert.deepEqual(await aspectsSent(false), { "EU Shoe Size": ["EU 37.5"] }); // lookup down: sent as drafted
+
+// A required item specific missing from the draft stops the publish before anything is sent to eBay.
+{
+  requireUpper = true;
+  stub([]);
+  await assert.rejects(
+    publishListing({ ...listing, itemSpecifics: { "EU Shoe Size": ["37.5"] } }, { ...baseOpts, categoryId: "55794" }),
+    /Upper Material/
+  );
+  assert.deepEqual(calls, ["GET /sell/inventory/v1/offer?sku=resale-sku-1"]); // no upload, item or offer
+  stub([]);
+  await publishListing({ ...listing, itemSpecifics: { "Upper Material": ["textile"] } }, { ...baseOpts, categoryId: "55795" });
+  requireUpper = false;
+}
 
 console.log("sell.test ok");
