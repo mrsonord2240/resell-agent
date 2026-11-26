@@ -34,7 +34,7 @@ export async function fillAspects(
           `Return the JSON map.`,
       },
     ],
-    700
+    2000
   );
 
   const flat = parseJson<Record<string, string>>(raw);

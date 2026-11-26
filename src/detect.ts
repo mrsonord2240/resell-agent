@@ -26,7 +26,7 @@ function imageBlock(path: string) {
 
 export async function detectItems(imagePath: string): Promise<Detection[]> {
   const content: Msg["content"] = [imageBlock(imagePath), { type: "text", text: "Detect the sellable items as a JSON array." }];
-  return parseDetections(await complete(SYSTEM, [{ role: "user", content }], 900));
+  return parseDetections(await complete(SYSTEM, [{ role: "user", content }], 2500));
 }
 
 // Pull the JSON array out of the model reply, tolerantly. Split out so it's testable.

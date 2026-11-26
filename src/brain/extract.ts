@@ -80,6 +80,6 @@ export async function extractAttributes(
       text: `Seller notes: ${notes || "(none)"}${hint}\n\nCatalog this item as JSON.`,
     },
   ];
-  const raw = await complete(SYSTEM, [{ role: "user", content }], 1000);
+  const raw = await complete(SYSTEM, [{ role: "user", content }], 2500);
   return parseJson<ItemAttributes>(raw);
 }

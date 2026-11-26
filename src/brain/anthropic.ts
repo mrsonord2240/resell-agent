@@ -39,8 +39,11 @@ export async function complete(system: string, messages: Msg[], maxTokens = 1000
   });
   if (!res.ok) throw new Error(`anthropic ${res.status}: ${await res.text()}`);
 
-  const j = (await res.json()) as { content: Array<{ type: string; text?: string }> };
-  return j.content.map((b) => b.text ?? "").join("").trim();
+  const j = (await res.json()) as { content: Array<{ type: string; text?: string }>; stop_reason?: string };
+  const text = j.content.map((b) => b.text ?? "").join("").trim();
+  // A cut-off reply otherwise surfaces later as a baffling "no JSON" parse error.
+  if (j.stop_reason === "max_tokens") throw new Error(`anthropic reply hit max_tokens (${maxTokens}) and was cut off: ${text.slice(0, 120)}`);
+  return text;
 }
 
 // Models sometimes wrap JSON in prose or ```json fences. Pull out the object.

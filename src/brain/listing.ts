@@ -35,7 +35,7 @@ export async function generateListing(
           `Write the listing as JSON.`,
       },
     ],
-    900
+    2500
   );
   const { title, description } = parseJson<{ title: string; description: string }>(raw);
   return {
