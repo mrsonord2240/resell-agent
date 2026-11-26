@@ -13,7 +13,7 @@ export interface Msg {
       >;
 }
 
-export function messagesEndpoint(baseUrl = process.env.ANTHROPIC_BASE_URL ?? "https://api.anthropic.com"): string {
+export function messagesEndpoint(baseUrl = process.env.ANTHROPIC_BASE_URL?.trim() || "https://api.anthropic.com"): string {
   const base = baseUrl.trim().replace(/\/+$/, "");
   return base.endsWith("/v1") ? `${base}/messages` : `${base}/v1/messages`;
 }
@@ -35,7 +35,7 @@ export async function complete(system: string, messages: Msg[], maxTokens = 1000
       "anthropic-version": "2023-06-01",
       "Content-Type": "application/json",
     },
-    body: JSON.stringify({ model: process.env.ANTHROPIC_MODEL ?? "claude-sonnet-5-5", max_tokens: maxTokens, system, messages }),
+    body: JSON.stringify({ model: process.env.ANTHROPIC_MODEL?.trim() || "claude-sonnet-5-5", max_tokens: maxTokens, system, messages }),
   });
   if (!res.ok) throw new Error(`anthropic ${res.status}: ${await res.text()}`);
 

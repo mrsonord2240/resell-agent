@@ -51,14 +51,14 @@ export async function matchBrand(imagePath: string): Promise<BrandMatch | null> 
   if (!process.env.ENABLE_BRAND_MATCH) return null;
   try {
     const { existsSync } = await import("node:fs");
-    const indexPath = process.env.BRAND_INDEX ?? "brand-index.json";
+    const indexPath = process.env.BRAND_INDEX || "brand-index.json";
 
     // Preferred: nearest-neighbour against your own indexed reference photos.
     if (existsSync(indexPath)) {
       const { loadIndex, search } = await import("./nnindex.js");
       const { embedImage } = await import("./embed.js");
       const hits = search(loadIndex(indexPath), await embedImage(imagePath), 3);
-      const min = Number(process.env.BRAND_MATCH_MIN ?? 0.75);
+      const min = Number(process.env.BRAND_MATCH_MIN || 0.75);
       if (!hits.length || hits[0].score < min) return null;
       return { brand: hits[0].label, score: hits[0].score };
     }

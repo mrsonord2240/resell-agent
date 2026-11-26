@@ -156,7 +156,7 @@ async function cmdOutfit() {
 }
 
 async function cmdGui() {
-  const port = Number(arg("--port") ?? process.env.GUI_PORT ?? 3000);
+  const port = Number(arg("--port") ?? (process.env.GUI_PORT || 3000));
   await startGui(Number.isFinite(port) ? port : 3000);
 }
 
