@@ -228,7 +228,7 @@ function renderPage(boot: GuiBootState): string {
     .grid > .card:first-child { background: var(--aubergine); color: oklch(0.9 0.01 312); border-color: var(--aubergine); box-shadow: 0 30px 60px -36px oklch(0.1 0.04 312 / 0.65); }
     .grid > .card:first-child h1, .grid > .card:first-child h2, .grid > .card:first-child h3 { color: oklch(0.97 0.01 312); }
     .grid > .card:first-child p, .grid > .card:first-child .muted { color: oklch(0.82 0.015 312); }
-    #publish-panel { grid-column: 1 / -1; }
+    #publish-panel { margin-top: clamp(1rem, 2vw, 1.5rem); }
     h1 { font-size: clamp(1.65rem, 2.4vw, 2.45rem); font-weight: 500; }
     h1 em { color: var(--gold); font-style: italic; font-weight: 500; }
     h2 { font-size: clamp(1.55rem, 2.5vw, 2.25rem); }
@@ -328,7 +328,7 @@ function renderPage(boot: GuiBootState): string {
     #publish-panel[hidden] { display: none; }
     #draft-meta { margin-bottom: 1rem; color: var(--muted); font-size: 0.9rem; }
     .grid > .card:nth-child(2) { position: sticky; top: 5.6rem; }
-    @media (max-width: 960px) { .grid { grid-template-columns: 1fr; } #publish-panel { grid-column: auto; } .two-col { grid-template-columns: 1fr; } .steps { gap: 0.8rem; justify-content: space-between; } .step { font-size: 0.62rem; letter-spacing: 0.08em; } .step + .step::before { display: none; } .grid > .card:nth-child(2) { position: static; } }
+    @media (max-width: 960px) { .grid { grid-template-columns: 1fr; }.two-col { grid-template-columns: 1fr; } .steps { gap: 0.8rem; justify-content: space-between; } .step { font-size: 0.62rem; letter-spacing: 0.08em; } .step + .step::before { display: none; } .grid > .card:nth-child(2) { position: static; } }
     @media (max-width: 560px) { .steps { align-items: flex-start; } .step { flex-direction: column; gap: 0.2rem; text-align: center; } }
   </style>
 </head>
@@ -425,7 +425,8 @@ function renderPage(boot: GuiBootState): string {
         <h2>Draft summary</h2>
         <div id="summary"><p class="muted">Build a draft to see pricing and comparisons.</p></div>
       </section>
-
+    </div>
+    <div class="wrap">
       <section id="publish-panel" class="card" hidden>
         <span class="eyebrow">03 / Place</span>
         <h2>Review and publish</h2>
