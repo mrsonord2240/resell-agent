@@ -176,7 +176,7 @@ Add `--clean` to remove photo backgrounds first (via `@imgly/background-removal-
 then auto-crop tight to the item (`sharp` trims the transparent margin, leaving a small
 pad). It writes a transparent `*.clean.png` next to each photo, cleaner, centered input
 for attribute extraction, and listing-ready (eBay composites transparent PNGs onto white).
-Host those `.clean.png` files and pass them to `post --images`. Note: the remover and crop
+`post` uploads the draft's photos to eBay itself. Note: the remover and crop
 pull native deps (`sharp`, `onnxruntime-node`) whose install scripts you must approve on
 `npm install`, and the remover downloads its model on first run. Auto-crop is best-effort:
 if `sharp` is unavailable it falls back to the uncropped cutout.
@@ -277,8 +277,8 @@ The publish endpoint accepts only a stored `draftId`. It merges the reviewable
 title, description, finite price (a positive price is required for external
 publishing), and eBay category into the server's
 stored draft; it does not trust a client-supplied full `DraftBundle`. Select at
-least one of `ebay`, `poshmark`, or `depop`. eBay image URLs must be public
-HTTPS URLs because eBay fetches them. GUI eBay SKUs are stable for a draft
+least one of `ebay`, `poshmark`, or `depop`. eBay uploads the draft's photos through
+eBay's Media API; pasted image URLs are optional and must be public HTTPS URLs. GUI eBay SKUs are stable for a draft
 (derived from its draft ID), successful platform results are persisted, and a
 retry skips those successful targets. The UI reports all/some/none explicitly;
 failed and unknown results remain visible. A browser submit timeout is marked
@@ -334,7 +334,6 @@ no keys, offline). The same cream bag, two outings apart:
 
 ```
 npm run post -- --draft draft.json --platforms ebay,poshmark,depop \
-  --images https://your-host/img1.jpg,https://your-host/img2.jpg \
   --location my-location-key \
   --fulfillment <id> --payment <id> --return <id>
 ```
@@ -348,7 +347,8 @@ live: check it before retrying. `npm run status -- --draft draft.json` shows whe
 each platform stands.
 
 `--category <id>` is optional, pass it only to override the auto-resolved one.
-eBay image URLs must be publicly reachable (eBay pulls them). Host them first.
+eBay photos upload from the draft through eBay's Media API (the user token needs the
+`sell.inventory` scope). `--images` is optional: public HTTPS URLs used instead of uploading.
 Edit titles, descriptions or prices by editing `draft.json` before posting.
 
 ### For agents

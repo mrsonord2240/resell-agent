@@ -1,5 +1,6 @@
 import { cfg } from "../config.js";
 import { getUserToken } from "./auth.js";
+import { uploadEbayImages } from "./media.js";
 import type { ListingDraft } from "../types.js";
 
 // eBay condition enums for the Inventory API.
@@ -41,7 +42,8 @@ async function ebayFetch(path: string, init: RequestInit) {
 
 export interface PostOptions {
   sku: string;
-  imageUrls: string[];        // must be publicly reachable URLs
+  imageUrls: string[];        // public HTTPS URLs; empty means upload photoPaths
+  photoPaths?: string[];      // local photos, uploaded to eBay when imageUrls is empty
   quantity?: number;
   categoryId: string;         // eBay leaf category id
   merchantLocationKey: string;
@@ -79,14 +81,25 @@ export async function publishListing(
   draft: ListingDraft,
   opts: PostOptions
 ): Promise<{ offerId: string; listingId: string }> {
-  // Stable GUI SKUs make retries detectable. Do not create a second offer when
-  // eBay already has one for this SKU; an operator can inspect/reconcile it.
+  // Stable SKUs make retries detectable. A published offer for this SKU is the
+  // listing already; one unpublished offer is a run that died before publish
+  // and is resumed. Anything else is ambiguous and left for a human.
   const priorOffers = await existingOffers(opts.sku);
   const priorPublished = priorOffers.find((offer) => offer.status === "PUBLISHED" && offer.listingId);
   if (priorPublished?.listingId) return { offerId: priorPublished.offerId, listingId: priorPublished.listingId };
-  if (priorOffers.length) {
-    throw new Error(`eBay already has an offer for SKU ${opts.sku}; inspect it before retrying to avoid a duplicate.`);
+  const unpublished = priorOffers.filter((offer) => offer.status === "UNPUBLISHED");
+  if (priorOffers.length && (unpublished.length !== 1 || priorOffers.length !== 1)) {
+    throw new Error(
+      `eBay already has offers for SKU ${opts.sku} (${priorOffers.map((o) => o.offerId).join(", ")}); inspect them before retrying to avoid a duplicate.`
+    );
   }
+  const resumeOfferId = unpublished[0]?.offerId;
+
+  // Upload only once we know a listing will be made; unused eBay images expire.
+  const imageUrls = opts.imageUrls.length
+    ? opts.imageUrls
+    : await uploadEbayImages(opts.photoPaths ?? []);
+  if (!imageUrls.length) throw new Error("eBay publish needs photos or public HTTPS image URLs.");
 
   // 1. inventory item (keyed by SKU)
   await ebayFetch(`/sell/inventory/v1/inventory_item/${encodeURIComponent(opts.sku)}`, {
@@ -97,37 +110,41 @@ export async function publishListing(
       product: {
         title: draft.title,
         description: draft.description,
-        imageUrls: opts.imageUrls,
+        imageUrls,
         ...(draft.itemSpecifics ? { aspects: draft.itemSpecifics } : {}),
       },
     }),
   });
 
-  // 2. offer
-  const offer = await ebayFetch(`/sell/inventory/v1/offer`, {
-    method: "POST",
-    body: JSON.stringify({
-      sku: opts.sku,
-      marketplaceId: "EBAY_US",
-      format: "FIXED_PRICE",
-      availableQuantity: opts.quantity ?? 1,
-      categoryId: opts.categoryId,
-      listingDescription: draft.description,
-      pricingSummary: { price: { value: draft.price.toFixed(2), currency: "USD" } },
-      listingPolicies: {
-        fulfillmentPolicyId: opts.fulfillmentPolicyId,
-        paymentPolicyId: opts.paymentPolicyId,
-        returnPolicyId: opts.returnPolicyId,
-      },
-      merchantLocationKey: opts.merchantLocationKey,
-    }),
+  // 2. offer: update the stranded one, or create it
+  const offerBody = JSON.stringify({
+    sku: opts.sku,
+    marketplaceId: "EBAY_US",
+    format: "FIXED_PRICE",
+    availableQuantity: opts.quantity ?? 1,
+    categoryId: opts.categoryId,
+    listingDescription: draft.description,
+    pricingSummary: { price: { value: draft.price.toFixed(2), currency: "USD" } },
+    listingPolicies: {
+      fulfillmentPolicyId: opts.fulfillmentPolicyId,
+      paymentPolicyId: opts.paymentPolicyId,
+      returnPolicyId: opts.returnPolicyId,
+    },
+    merchantLocationKey: opts.merchantLocationKey,
   });
+  let offerId: string;
+  if (resumeOfferId) {
+    await ebayFetch(`/sell/inventory/v1/offer/${encodeURIComponent(resumeOfferId)}`, { method: "PUT", body: offerBody });
+    offerId = resumeOfferId;
+  } else {
+    offerId = (await ebayFetch(`/sell/inventory/v1/offer`, { method: "POST", body: offerBody })).offerId;
+  }
 
   // 3. publish
   const published = await ebayFetch(
-    `/sell/inventory/v1/offer/${offer.offerId}/publish`,
+    `/sell/inventory/v1/offer/${encodeURIComponent(offerId)}/publish`,
     { method: "POST" }
   );
 
-  return { offerId: offer.offerId, listingId: published.listingId };
+  return { offerId, listingId: published.listingId };
 }

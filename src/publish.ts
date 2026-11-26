@@ -1,3 +1,4 @@
+import { cfg } from "./config.js";
 import { publishListing, type PostOptions } from "./ebay/sell.js";
 import { publishViaBrowser, type BrowserAutomationOptions, type BrowserPublishResult } from "./browser-automation.js";
 import { GUI_PLATFORMS, stableGuiSku } from "./gui-validation.js";
@@ -35,6 +36,8 @@ export interface PlatformPublishResult {
   offerId?: string;
   listingId?: string;
   url?: string;
+  /** eBay only: the environment the result came from, so a sandbox run never stands in for production. */
+  env?: "sandbox" | "production";
 }
 
 export interface PublishRunResult {
@@ -115,11 +118,16 @@ export function toEbayOptions(
   draft: DraftBundle,
   ebay: EbayPublishSettings | undefined,
   draftId?: string,
-  guiSkuPrefix = ""
+  guiSkuPrefix = "",
+  photoPaths: string[] = []
 ): PostOptions {
   const listing = listingForPlatform(draft, "ebay");
   const categoryId = ebay?.categoryId ?? listing?.categoryId ?? "";
-  const imageUrls = validateHttpsImageUrls(ebay?.imageUrls);
+  // Given URLs win; otherwise the draft's photos are uploaded to eBay at publish time.
+  if (!ebay?.imageUrls?.length && !photoPaths.length) {
+    throw new Error("eBay publish needs photos or public HTTPS image URLs.");
+  }
+  const imageUrls = ebay?.imageUrls?.length ? validateHttpsImageUrls(ebay.imageUrls) : [];
   const quantity = ebay?.quantity ?? 1;
   if (!Number.isInteger(quantity) || quantity < 1 || quantity > 100) {
     throw new Error("eBay quantity must be an integer between 1 and 100.");
@@ -130,6 +138,7 @@ export function toEbayOptions(
   return {
     sku: draftId ? stableGuiSku(draftId, guiSkuPrefix) : (ebay?.sku?.trim() || `resale-${Date.now()}`),
     imageUrls,
+    photoPaths: imageUrls.length ? [] : photoPaths,
     quantity,
     categoryId: category,
     merchantLocationKey: requireText(ebay?.merchantLocationKey, "eBay merchantLocationKey"),
@@ -172,9 +181,15 @@ export async function publishDraftBundle(
   const results: PlatformPublishResult[] = [];
   const previous = new Map((opts.previousResults ?? []).map((result) => [result.platform, result]));
 
+  const ebayEnv = cfg.env === "production" ? "production" : "sandbox";
+
   for (const platform of targets) {
     const prior = previous.get(platform);
-    if (prior?.status === "published") {
+    // An eBay success counts only in the environment it happened in. One with
+    // no env predates this field and goes back to eBay, whose SKU lookup
+    // returns an existing live listing instead of making a second one.
+    const priorCounts = platform !== "ebay" || prior?.env === ebayEnv;
+    if (prior?.status === "published" && priorCounts) {
       results.push({
         ...prior,
         status: "skipped",
@@ -205,7 +220,7 @@ export async function publishDraftBundle(
     let externalPublishAttempted = false;
     try {
       if (platform === "ebay") {
-        const ebayOpts = toEbayOptions(opts.draft, opts.ebay, opts.draftId, opts.guiSkuPrefix);
+        const ebayOpts = toEbayOptions(opts.draft, opts.ebay, opts.draftId, opts.guiSkuPrefix, opts.photoPaths);
         externalPublishAttempted = true;
         const published = await publishEbay(listing, ebayOpts);
         if (!published || typeof published.offerId !== "string" || !published.offerId || typeof published.listingId !== "string" || !published.listingId) {
@@ -217,6 +232,7 @@ export async function publishDraftBundle(
           message: `eBay published: offer ${published.offerId}, listing ${published.listingId}`,
           offerId: published.offerId,
           listingId: published.listingId,
+          env: ebayEnv,
         });
       } else {
         if (!opts.photoPaths.length) {

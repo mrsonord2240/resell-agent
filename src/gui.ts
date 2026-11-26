@@ -435,7 +435,7 @@ function renderPage(boot: GuiBootState): string {
         <div id="listing-cards" class="listing-grid"></div>
         <section id="ebay-section" class="form-note" hidden>
           <h3>eBay publish settings</h3>
-          <p class="muted">eBay still needs public image URLs and your saved account policy IDs.</p>
+          <p class="muted">Your photos upload to eBay when you publish. eBay still needs your saved account policy IDs.</p>
           <div class="two-col">
             <label>SKU (stable for this draft)<input id="ebay-sku" name="ebay-sku" type="text" placeholder="resale-..." readonly /></label>
             <label>Merchant location key<input id="ebay-location" name="ebay-location" type="text" /></label>
@@ -446,7 +446,7 @@ function renderPage(boot: GuiBootState): string {
           </div>
           <label>Return policy ID<input id="ebay-return" name="ebay-return" type="text" /></label>
           <label>
-            Public image URLs for eBay, one per line
+            Public image URLs for eBay, one per line <span class="field-help">optional; leave blank to upload your photos</span>
             <textarea id="ebay-image-urls" name="ebay-image-urls" rows="4" placeholder="https://...\nhttps://..."></textarea>
           </label>
         </section>

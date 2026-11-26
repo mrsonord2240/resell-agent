@@ -207,7 +207,7 @@ export function buildGuiScript(boot: GuiBootState): string {
     "function renderListingCard(listing) {",
     "  var specifics = listing.itemSpecifics ? JSON.stringify(listing.itemSpecifics, null, 2) : '{}';",
     "  var categoryField = listing.platform === 'ebay' ? '<label>Category ID<input data-field=\"categoryId\" value=\"' + escapeHtml(listing.categoryId || '') + '\"></label>' : '';",
-    "  var extraNote = listing.platform === 'ebay' ? '<p class=\"muted\">eBay publish still needs public image URLs and the one-time account IDs.</p>' : '<p class=\"muted\">Browser automation is optional; use Copy listing for manual copy/paste.</p>';",
+    "  var extraNote = listing.platform === 'ebay' ? '<p class=\"muted\">eBay publish uploads your photos and needs the one-time account IDs.</p>' : '<p class=\"muted\">Browser automation is optional; use Copy listing for manual copy/paste.</p>';",
     "  return '<article class=\"listing-card\" data-platform=\"' + listing.platform + '\">' +",
     "    '<header><div><h3>' + listing.platform.toUpperCase() + '</h3><p class=\"muted\">Condition: ' + escapeHtml(listing.condition || '') + '</p></div><div class=\"publish-status\" data-status data-kind=\"idle\">Ready</div></header>' +",
     "    '<label>Title<input data-field=\"title\" value=\"' + escapeHtml(listing.title) + '\"></label>' +",

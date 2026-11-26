@@ -70,7 +70,7 @@ const COMMANDS: Record<string, CommandSpec> = {
     flags: {
       "--draft": "draft file (default draft.json); publish results are saved back into it",
       "--platforms": `${PLATFORMS_FLAG} (default every platform in the draft)`,
-      "--images": "eBay: comma list of public HTTPS image URLs",
+      "--images": "eBay: optional comma list of public HTTPS image URLs; default uploads the draft's photos",
       "--location": "eBay: merchant location key (env GUI_DEFAULT_MERCHANT_LOCATION_KEY)",
       "--fulfillment": "eBay: fulfillment policy id (env GUI_DEFAULT_FULFILLMENT_POLICY_ID)",
       "--payment": "eBay: payment policy id (env GUI_DEFAULT_PAYMENT_POLICY_ID)",
@@ -133,7 +133,7 @@ async function cmdDraft() {
   const out = arg("--out") ?? "draft.json";
 
   // --clean: remove backgrounds first. Cleaner input -> better attribute extraction,
-  // and the .clean.png files are listing-ready (host them for `post --images`).
+  // and the .clean.png files are listing-ready (`post` uploads them to eBay).
   let usePhotos = photos;
   if (has("--clean")) {
     const { cleanPhoto } = await import("./brain/bgremove.js");

@@ -4,6 +4,8 @@ import assert from "node:assert";
 import { publishDraftBundle, toEbayOptions, validateHttpsImageUrls } from "./publish.js";
 import type { DraftBundle } from "./types.js";
 
+process.env.EBAY_ENV = "sandbox"; // the retry case below stores a sandbox result
+
 const draft: DraftBundle = {
   attributes: {
     brand: "Patagonia",
@@ -77,7 +79,7 @@ const retry = await publishDraftBundle(
       paymentPolicyId: "payment",
       returnPolicyId: "return",
     },
-    previousResults: [{ platform: "ebay", status: "published", message: "already live", offerId: "o", listingId: "l" }],
+    previousResults: [{ platform: "ebay", status: "published", message: "already live", offerId: "o", listingId: "l", env: "sandbox" }],
   },
   {
     publishEbay: async (_listing, opts) => {
@@ -115,5 +117,31 @@ const guiEbay = toEbayOptions(
 );
 assert.equal(guiEbay.sku, toEbayOptions(draft, { ...guiEbay, sku: "different-prefix" }, "123e4567-e89b-12d3-a456-426614174000").sku);
 assert.match(guiEbay.sku, /^resale-gui-/);
+
+// With no image URLs, eBay publishes from the draft's photos (uploaded to eBay).
+const settingsNoUrls = { imageUrls: [], merchantLocationKey: "loc", fulfillmentPolicyId: "f", paymentPolicyId: "p", returnPolicyId: "r" };
+const fromPhotos = toEbayOptions(draft, settingsNoUrls, undefined, "", ["/tmp/photo1.jpg"]);
+assert.deepEqual(fromPhotos.imageUrls, []);
+assert.deepEqual(fromPhotos.photoPaths, ["/tmp/photo1.jpg"]);
+assert.throws(() => toEbayOptions(draft, settingsNoUrls, undefined, "", []), /photos or public HTTPS image URLs/);
+
+// eBay results record the environment; a sandbox success never hides a missing production listing.
+process.env.EBAY_ENV = "production";
+const ebayOnly = (previousResults: Parameters<typeof publishDraftBundle>[0]["previousResults"]) =>
+  publishDraftBundle(
+    { draft, photoPaths: ["/tmp/photo1.jpg"], platforms: ["ebay"], ebay: settingsNoUrls, previousResults },
+    { publishEbay: async () => ({ offerId: "o2", listingId: "l2" }) }
+  );
+const fresh = await ebayOnly([]);
+assert.equal(fresh.results[0].status, "published");
+assert.equal(fresh.results[0].env, "production");
+const afterSandbox = await ebayOnly([{ platform: "ebay", status: "published", message: "", env: "sandbox", listingId: "s" }]);
+assert.equal(afterSandbox.results[0].status, "published");
+assert.equal(afterSandbox.results[0].listingId, "l2");
+const afterProduction = await ebayOnly([{ platform: "ebay", status: "published", message: "", env: "production", listingId: "p" }]);
+assert.equal(afterProduction.results[0].status, "skipped");
+// A result written before env was recorded goes back to eBay, whose SKU lookup finds any live listing.
+const legacy = await ebayOnly([{ platform: "ebay", status: "published", message: "", listingId: "old" }]);
+assert.equal(legacy.results[0].status, "published");
 
 console.log("publish.test ok");

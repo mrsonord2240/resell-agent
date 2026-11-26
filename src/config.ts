@@ -18,6 +18,11 @@ export const cfg = {
   get apiBase() {
     return this.env === "production" ? "https://api.ebay.com" : "https://api.sandbox.ebay.com";
   },
+  // Media API (photo upload) lives on its own host. eBay's spec lists only
+  // production; the sandbox host follows eBay's apim.sandbox convention.
+  get mediaBase() {
+    return this.env === "production" ? "https://apim.ebay.com" : "https://apim.sandbox.ebay.com";
+  },
   get authBase() {
     return this.env === "production" ? "https://auth.ebay.com" : "https://auth.sandbox.ebay.com";
   },
