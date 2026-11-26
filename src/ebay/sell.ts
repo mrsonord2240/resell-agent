@@ -1,20 +1,60 @@
 import { cfg } from "../config.js";
-import { getUserToken } from "./auth.js";
+import { getAppToken, getUserToken } from "./auth.js";
 import { uploadEbayImages } from "./media.js";
 import type { ListingDraft } from "../types.js";
 
-// eBay condition enums for the Inventory API.
-function ebayConditionEnum(c: ListingDraft["condition"]): string {
-  switch (c) {
-    case "NWT":
-      return "NEW_WITH_TAGS";
-    case "like-new":
-      return "LIKE_NEW";
-    case "good":
-      return "USED_EXCELLENT";
-    case "fair":
-      return "USED_GOOD";
+// eBay condition IDs -> Inventory API ConditionEnum. Source: eBay "Item condition
+// ID and name values" (sell/static/metadata/condition-id-values.html).
+const CONDITION_ENUM: Record<number, string> = {
+  1000: "NEW",                  // New, New with tags, New with box
+  1500: "NEW_OTHER",            // New without tags / box
+  2750: "LIKE_NEW",
+  2990: "PRE_OWNED_EXCELLENT",  // apparel only
+  3000: "USED_EXCELLENT",       // Used; "Pre-owned - Good" in apparel
+  3010: "PRE_OWNED_FAIR",       // apparel only
+  4000: "USED_VERY_GOOD",
+  5000: "USED_GOOD",
+  6000: "USED_ACCEPTABLE",
+};
+
+// Closest eBay condition first. Categories allow different sets (apparel uses
+// 2990/3000/3010, most others 2750-6000), so the first one the category allows wins.
+const CONDITION_PREFERENCE: Record<ListingDraft["condition"], number[]> = {
+  NWT: [1000],
+  "like-new": [2990, 2750, 3000],
+  good: [3000, 4000],
+  fair: [3010, 5000, 6000],
+};
+
+// Used when the category's allowed conditions can't be fetched.
+const GENERAL_CONDITION: Record<ListingDraft["condition"], number> = { NWT: 1000, "like-new": 2750, good: 3000, fair: 5000 };
+
+const allowedConditionCache = new Map<string, Set<number> | null>();
+
+async function allowedConditionIds(categoryId: string): Promise<Set<number> | null> {
+  if (allowedConditionCache.has(categoryId)) return allowedConditionCache.get(categoryId) ?? null;
+  let allowed: Set<number> | null = null;
+  try {
+    const res = await fetch(
+      `${cfg.apiBase}/sell/metadata/v1/marketplace/EBAY_US/get_item_condition_policies?filter=${encodeURIComponent(`categoryIds:{${categoryId}}`)}`,
+      { headers: { Authorization: `Bearer ${await getAppToken()}`, "Accept-Language": "en-US" } }
+    );
+    if (res.ok) {
+      const body = (await res.json()) as { itemConditionPolicies?: Array<{ itemConditions?: Array<{ conditionId?: string }> }> };
+      const ids = (body.itemConditionPolicies?.[0]?.itemConditions ?? []).map((c) => Number(c.conditionId)).filter(Number.isFinite);
+      if (ids.length) allowed = new Set(ids);
+    }
+  } catch {
+    allowed = null;
   }
+  if (allowed) allowedConditionCache.set(categoryId, allowed);
+  return allowed;
+}
+
+async function ebayConditionEnum(condition: ListingDraft["condition"], categoryId: string): Promise<string> {
+  const allowed = await allowedConditionIds(categoryId);
+  const id = allowed ? CONDITION_PREFERENCE[condition].find((c) => allowed.has(c)) : undefined;
+  return CONDITION_ENUM[id ?? GENERAL_CONDITION[condition]];
 }
 
 async function ebayFetch(path: string, init: RequestInit) {
@@ -115,7 +155,7 @@ export async function publishListing(
     method: "PUT",
     body: JSON.stringify({
       availability: { shipToLocationAvailability: { quantity: opts.quantity ?? 1 } },
-      condition: ebayConditionEnum(draft.condition),
+      condition: await ebayConditionEnum(draft.condition, opts.categoryId),
       product: {
         title: draft.title,
         description: draft.description,

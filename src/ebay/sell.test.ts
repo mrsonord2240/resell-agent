@@ -31,12 +31,19 @@ const baseOpts = {
 type Route = (url: string, init: RequestInit) => Response | undefined;
 let calls: string[] = [];
 let bodies: Record<string, unknown> = {};
+// Condition IDs the category allows; Heels (55793) on live eBay, 2026-11-26. null = metadata call fails.
+const APPAREL = [1000, 1500, 1750, 2990, 3000, 3010];
 
-function stub(offers: unknown[]): void {
+function stub(offers: unknown[], allowed: number[] | null = APPAREL): void {
   calls = [];
   bodies = {};
   const routes: Route[] = [
     (url) => (url.endsWith("/identity/v1/oauth2/token") ? Response.json({ access_token: "t", expires_in: 7200 }) : undefined),
+    (url) => (url.includes("/get_item_condition_policies")
+      ? (allowed
+        ? Response.json({ itemConditionPolicies: [{ categoryId: "57988", itemConditions: allowed.map((id) => ({ conditionId: String(id) })) }] })
+        : new Response("down", { status: 500 }))
+      : undefined),
     // Like eBay: a SKU with no offers is a 404 (errorId 25713), not an empty list.
     (url, init) => (url.includes("/sell/inventory/v1/offer?sku=") && init.method === "GET"
       ? (offers.length
@@ -52,7 +59,7 @@ function stub(offers: unknown[]): void {
   globalThis.fetch = (async (input: RequestInfo | URL, init: RequestInit = {}) => {
     const url = String(input);
     const method = init.method ?? "GET";
-    if (!url.endsWith("/oauth2/token")) calls.push(`${method} ${url.replace(/^https:\/\/[^/]+/, "")}`);
+    if (!url.endsWith("/oauth2/token") && !url.includes("/get_item_condition_policies")) calls.push(`${method} ${url.replace(/^https:\/\/[^/]+/, "")}`);
     if (typeof init.body === "string") bodies[`${method} ${url.replace(/^https:\/\/[^/]+/, "")}`] = JSON.parse(init.body);
     // Like eBay: Node's fetch sends "Accept-Language: *" unless told otherwise, and eBay rejects that (errorId 25709).
     const lang = new Headers(init.headers).get("accept-language");
@@ -118,5 +125,23 @@ function stub(offers: unknown[]): void {
   await publishListing(listing, { ...baseOpts, imageUrls: ["https://example.com/a.jpg"] });
   assert.ok(!calls.some((c) => c.includes("create_image_from_file")));
 }
+
+// The condition sent is one the category allows: the closest match to the draft's condition.
+const conditionSent = async (condition: ListingDraft["condition"], allowed: number[] | null) => {
+  stub([], allowed);
+  // Allowed conditions are cached per category, so each policy set gets its own category id.
+  const categoryId = allowed === APPAREL ? "55793" : allowed === null ? "99999" : "11450";
+  await publishListing({ ...listing, condition }, { ...baseOpts, categoryId });
+  return (bodies["PUT /sell/inventory/v1/inventory_item/resale-sku-1"] as { condition: string }).condition;
+};
+const GENERAL = [1000, 1500, 2750, 3000, 4000, 5000, 6000];
+assert.equal(await conditionSent("fair", APPAREL), "PRE_OWNED_FAIR");          // was USED_GOOD (5000): rejected for Heels
+assert.equal(await conditionSent("like-new", APPAREL), "PRE_OWNED_EXCELLENT");
+assert.equal(await conditionSent("good", APPAREL), "USED_EXCELLENT");          // shown as "Pre-owned - Good"
+assert.equal(await conditionSent("NWT", APPAREL), "NEW");                      // NEW_WITH_TAGS is not an eBay value
+assert.equal(await conditionSent("like-new", GENERAL), "LIKE_NEW");
+assert.equal(await conditionSent("fair", GENERAL), "USED_GOOD");
+// If the policy lookup fails, fall back to the general mapping rather than block the publish.
+assert.equal(await conditionSent("fair", null), "USED_GOOD");
 
 console.log("sell.test ok");
