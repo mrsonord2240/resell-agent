@@ -43,5 +43,7 @@ export const cfg = {
   sellScopes: [
     "https://api.ebay.com/oauth/api_scope",
     "https://api.ebay.com/oauth/api_scope/sell.inventory",
+    // Read-only: lets setup list the seller's business policy IDs.
+    "https://api.ebay.com/oauth/api_scope/sell.account.readonly",
   ],
 };
