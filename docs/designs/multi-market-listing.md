@@ -419,3 +419,204 @@ Mode: SCOPE REDUCTION (Sam's choice; about 18 planned files was over the 15-file
   - Rollback is `git revert` plus a desktop rebuild; the draft files stay compatible.
 - **S10 Trajectory.** Reversibility 4/5. Main debt: the Depop script breaks when Depop changes its form. That is mitigated by the fixture test and errors that name the field. The adapter seam keeps the Partner API, Poshmark and delist sync open.
 - **S11 UI.** Small UI scope: `unknown` rows get Mark posted / Mark not posted buttons, and unmapped-field flags show in the publish panel. The deep pass belongs to /plan-design-review.
+
+### Outside voice (Codex, gpt-6.2-astra): 10 findings
+
+Coverage: **unavailable**. The reply was complete but lacked the gate's recommendation marker, so it gets no outside-coverage credit. Each claim was checked against the code before use.
+
+| ID and owner | Contract and evidence | Current | Proposed | Status | Exact approval and scope |
+|---|---|---|---|---|---|
+| O1 runner | `publishDraftBundle` runs markets in turn (`src/publish.ts:175`), so a Depop wait blocks the overnight eBay run | Two phases: `post-batch` publishes eBay unattended and exits; `post-batch --markets depop` is the interactive session | - | approved | Sam: "Two phases" |
+| O2 intake | `draft` mints a fresh UUID and clears results (`src/draft-file.ts:38`, `src/cli.ts:148`) | Batch intake creates `draft.json` only when it is absent, and otherwise resumes it, so the SKU and states survive | - | approved (determined) | Required by "never re-fills published/unknown" in the Success Criteria |
+| O3 eBay | An existing unpublished offer throws on every retry (`src/ebay/sell.ts:87-89`) | Resume from the existing offer for that SKU when its listing matches; otherwise `error` naming the offer | - | approved (determined) | Required by "publishes all 10 to eBay"; a pre-existing defect that the unattended batch makes worse |
+| O4 stock | Something sold on eBay overnight can still be filled on Depop | Before each Depop fill, check that the eBay listing is still active; if it sold or ended, record `skipped` with the reason "sold on eBay" | - | approved | Sam: "Check eBay before each fill" |
+| O5 safety | An inferred brand (`src/brain/extract.ts:24`) or a model-estimated price with no comps (`src/brain/price.ts:133`) goes live unseen | An inferred brand or fewer than 3 comps makes the draft `held`, listed in `status --batch`, and released with `resell mark --approve` | - | approved | Sam: "Hold uncertain drafts" |
+| O6 packaging | electron-builder excludes playwright (`package.json:72-73`) | First cut: CLI and the source-run desktop app. A packaged build must include playwright-core and be verified with one fill | - | pending | Owner: /plan-eng-review |
+| O7 GUI (reopens D3) | The GUI store is separate and its TTL deletes drafts (`src/gui.ts:39`) | `resell mark` for CLI and batch drafts; GUI buttons only on GUI drafts; the GUI TTL never deletes a draft with `unknown` or `filling` | - | approved | Sam: "CLI mark + GUI buttons on GUI drafts, no TTL delete" (supersedes D3's GUI half) |
+| O8 crash | The `wx` lock is left behind after a crash (`src/draft-file.ts:68`); an older publisher skips only `published` | The lock stores pid and time and is stale when that pid is dead. Rollback note: resolve `unknown`/`filling` rows before running an older build | - | approved (determined) | Required by the crash contract (stale `filling` -> `unknown` needs a breakable lock) |
+| O9 exit | Completion counts any `skipped` as done (`src/draft-file.ts:169`) | The exit code comes from the merged state of the requested markets; `unknown` and `held` mean incomplete (exit 3) | - | approved (determined) | Required by zero silent failures |
+| O10 premise | Each item calls the Anthropic API (`src/brain/anthropic.ts:16`) | Factual correction: "free" means no paid tools or subscriptions. Model calls cost a few cents per item on Sam's existing key | - | corrected | No behavior change |
+
+## NOT in scope
+
+- Poshmark assisted fill: deferred (D1, "Defer to TODOS.md"). Highest ban risk, and Sam isn't selling there yet.
+- GUI batch view: deferred (D2, "Keep thin batch, defer GUI view"). Batch is CLI-only in this cut.
+- Flat-pile photo grouping: not in this cut. One subfolder per item.
+- Delist sync, Poshmark chores, phone app: later directions 2 to 4.
+
+## What already exists
+
+- `src/pipeline.ts` turns photos into attributes, comps, price and listings. Reused as is.
+- `src/draft-file.ts` (`DraftFile`, `postDraft`, `withDraftLock`, `writeDraftFile`) is reused. The lock is upgraded (O8) and intake becomes idempotent (O2).
+- `src/publish.ts` (`publishDraftBundle`, `mergePublishResults`, `PlatformPublishResult`) is reused behind the adapter seam. The skip and merge rules gain `unknown`.
+- `src/ebay/sell.ts` (inventory, offer, publish) is reused, with offer resume added (O3).
+- `src/browser-automation.ts`: its Playwright loader and host checks are reused. The per-call launch and tool-side click are replaced.
+- `src/cli.ts` has the command spec table, the JSON envelope and exit codes; `post-batch`, `status --batch` and `mark` are added to it.
+
+## Dream state delta
+
+After this cut, Sam has: folder batch to eBay unattended, with uncertain items held; a Depop session that fills one form per click; no double posts and no listing of items sold overnight. Still missing for the 12-month ideal: Poshmark, the GUI batch view, delist sync, chores, the phone app and the Depop Partner API.
+
+## Error & Rescue Registry
+
+| Codepath | What can go wrong | Class | Rescued | Action | User sees |
+|---|---|---|---|---|---|
+| ebay media upload | 401, missing scope | eBay HTTP error | Y | `error` naming the scope; run log | "eBay photo upload: scope X missing; re-authorize" |
+| ebay media upload | File too big or bad type | eBay HTTP 400 | Y | `error` naming the file | Row error naming the photo |
+| ebay publishListing | Unpublished offer exists | offer conflict | Y (O3) | Resume it, or `error` naming the offer | Published, or an error with the offer id |
+| mapping (LLM) | Malformed JSON, refusal, invalid category | parseJson / validation | Y | Field left unmapped and flagged; draft continues | "category: needs you" in status and in the tab |
+| intake | Folder has no photos | usage | Y | `error` row; batch continues | Row error |
+| intake | Batch dir empty or missing | usage | Y | Exit 2 | Usage error |
+| depop fill | Selector missing (form changed) | fill error | Y | `error` + screenshot + log (D4) | "Depop: couldn't find <field>" |
+| depop fill | Redirect to login | session expired | Y | Halt Depop; `error` "sign in again"; no retry | Halt message |
+| depop fill | eBay listing sold or ended | stock check | Y (O4) | `skipped` "sold on eBay" | Row skipped with reason |
+| depop wait | Tab closed, no submit | close event | Y | `not_posted` | Row not posted |
+| depop wait | Browser or window closed, crash | context close | Y | Every filled, unresolved tab becomes `unknown` | Verify-first rows |
+| depop wait | Submit seen, URL not captured | capture timeout | Y | `unknown` | Verify-first row |
+| runner | Killed mid-wait | process death | Y (O8) | Stale `filling` becomes `unknown` on the next run; stale lock broken | Verify-first rows |
+| cli post-batch | Any `unknown` or `held` left | exit code | Y (O9) | Exit 3 with a list | "3 items need you" |
+
+## Failure Modes Registry
+
+| Codepath | Failure mode | Rescued | Test | User sees | Logged |
+|---|---|---|---|---|---|
+| depop wait | Post clicked, process dies | Y | unit (stale filling) | `unknown` | Y |
+| depop fill | Depop changes its form | Y | fixture (P3) | Named field error + screenshot | Y |
+| ebay overnight | Inferred brand published | Y (held) | unit | `held` row | Y |
+| depop session | Item sold on eBay | Y | unit (mocked status) | `skipped` reason | Y |
+| intake rerun | New UUID wipes state | Y (O2) | unit | No change | Y |
+| ebay | Stranded unpublished offer | Y (O3) | unit (mocked API) | Published or named error | Y |
+
+No CRITICAL GAP rows remain. The one critical gap (D3) is approved and fixed in the plan.
+
+## Diagrams
+
+System:
+```
+  resell CLI ──────────┐            Electron main (GUI server)
+   post-batch / status │              publish panel (GUI drafts only)
+   mark                │                   │
+                       v                   v
+                 batch runner ── adapters ─┬─ eBay adapter ── ebay/media (new) + ebay/sell (offer resume)
+                       │                   └─ Depop adapter ── Playwright persistent ctx (%LOCALAPPDATA% profile)
+                       │                                           └─ depop-fill script (per-site code)
+                       v
+          batch/<item>/draft.json  (DraftFile; per-market fields; states)   batch/batch.json (index)
+          batch/<item>/run.log + error-*.png (D4)
+```
+
+Per-market state (browser markets):
+```
+   (none|error|not_posted) ──fill start──> filling ──submit+URL──> published   (terminal)
+                                             │ ──submit, no URL──> unknown ──mark --posted──> published
+                                             │ ──tab closed──────> not_posted     └─mark --not-posted─> not_posted
+                                             │ ──ctx close/crash─> unknown
+                                             └ ──fill error──────> error
+   eBay sold/ended at fill time ──> skipped("sold on eBay")
+   held (eBay, uncertain draft) ──mark --approve──> eligible
+   Invalid: published -> anything (no edge); unknown -> filling (re-run skips unknown).
+```
+
+Two phases:
+```
+  night:  post-batch <dir>                 -> drafts (idempotent) -> hold uncertain -> eBay publish -> exit (0 or 3)
+  later:  post-batch <dir> --markets depop -> for each eligible item: eBay still active? -> fill tab -> wait for Sam
+```
+
+## Implementation Tasks
+
+- [ ] **T1 (P1, human ~4h / CC ~30min)**: ebay. Upload photos through the Media API, and resume an existing unpublished offer.
+  - Surfaced by: Next Step 1, O3, P2.
+  - Files: `src/ebay/media.ts` (new), `src/ebay/sell.ts`, `src/publish.ts`, `src/gui.ts:723`, `src/config.ts`.
+  - Verify: unit tests with a mocked fetch, plus one real eBay publish from local photos.
+- [ ] **T2 (P1, human ~3h / CC ~20min)**: types and brain. Add per-market fields on `ListingDraft` with a mapping step and an unmapped fallback.
+  - Surfaced by: Next Step 2, S2.
+  - Files: `src/types.ts`, `src/brain/listing.ts`.
+  - Verify: unit tests for a valid map, malformed JSON and invalid category.
+- [ ] **T3 (P1, human ~3h / CC ~20min)**: publish. Add the adapter seam and the state rules: skip and keep `unknown` for browser markets only (D6), `not_posted`, `held`, and the exit code from merged state (O9).
+  - Surfaced by: S4, D6, O9.
+  - Files: `src/publish.ts`, `src/draft-file.ts`.
+  - Verify: unit tests for the transition table.
+- [ ] **T4 (P1, human ~6h / CC ~45min)**: depop. Write the assisted-fill script in a persistent `%LOCALAPPDATA%` profile, with submit detection, the eBay-active check, the run log and error screenshots.
+  - Surfaced by: Next Step 4, D4, D5, O4.
+  - Files: `src/depop-fill.ts` (new), `src/browser-automation.ts`.
+  - Verify: Playwright run against a saved sell-form fixture (P3), plus one live listing.
+- [ ] **T5 (P1, human ~4h / CC ~30min)**: cli. Add `post-batch` (two phases, idempotent intake, the held rule), `status --batch`, `mark` and a pid lock.
+  - Surfaced by: D2, D3, O1, O2, O5, O8.
+  - Files: `src/cli.ts`, `src/draft-file.ts`, `src/batch.ts` (new).
+  - Verify: CLI spawn tests (help, empty dir exit 2, held exit 3, mark transitions).
+- [ ] **T6 (P2, human ~1h / CC ~10min)**: gui. Add Mark posted / not posted buttons on GUI drafts, and make the TTL skip unresolved drafts.
+  - Surfaced by: O7.
+  - Files: `src/gui.ts`, `src/gui-client.ts`.
+  - Verify: unit test of the TTL sweep, plus a manual click.
+- [ ] **T7 (P2, Sam, ~10min)**: Email developers@depop.com about Partner API access.
+  - Surfaced by: Premise 5.
+
+## Reality rows
+
+REALITY: premise-table finding 10 claims checked against code, 1 corrected (O10 "free"), unverified=1 (the Media API host, scope and beta status, P2) src/config.ts:38
+REALITY: already-done pass nothing on origin/main implements Media API, Depop fill or batch src/browser-automation.ts:138
+REALITY: surface-check finding post-batch, status --batch and mark don't exist yet (planned new); status --draft exists src/cli.ts:148
+REALITY: binding-decisions pass no recorded branch decisions; this ledger is the binding set docs/designs/multi-market-listing.md:364
+REALITY: numbers pass $10-50/mo [estimated: vendor pages] docs/designs/multi-market-listing.md:16; 18 files [estimated] docs/designs/multi-market-listing.md:138; 3-comp hold threshold [estimated] src/brain/price.ts:133
+REALITY: deferred-asks pass no linked issue src/publish.ts:177
+REALITY: pr-count pass no ship-policy; default one PR per wave src/draft-file.ts:68
+
+## Completion Summary
+
+```
+  +====================================================================+
+  |            MEGA PLAN REVIEW — COMPLETION SUMMARY                   |
+  +====================================================================+
+  | Mode selected        | SCOPE REDUCTION                             |
+  | System Audit         | eBay needs pasted URLs; browser shell unusable; no batch |
+  | Step 0               | Cut Poshmark, cut GUI batch view, thin CLI batch kept |
+  | Section 1  (Arch)    | 2 issues found (unknown unresolvable; GUI store split) |
+  | Section 2  (Errors)  | 14 error paths mapped, 0 GAPS               |
+  | Section 3  (Security)| 1 issue found, 0 High severity (profile location) |
+  | Section 4  (Data/UX) | 9 edge cases mapped, 0 unhandled            |
+  | Section 5  (Quality) | 0 issues found                              |
+  | Section 6  (Tests)   | Diagram produced, 1 gap (fixture method, pending P3) |
+  | Section 7  (Perf)    | 1 issue found (tab window, pending P1)      |
+  | Section 8  (Observ)  | 1 gap found (fixed by D4)                   |
+  | Section 9  (Deploy)  | 2 risks flagged (packaging O6, rollback O8) |
+  | Section 10 (Future)  | Reversibility: 4/5, debt items: 1           |
+  | Section 11 (Design)  | 2 issues (unknown buttons, unmapped flags)  |
+  +--------------------------------------------------------------------+
+  | NOT in scope         | written (4 items)                           |
+  | What already exists  | written                                     |
+  | Dream state delta    | written                                     |
+  | Error/rescue registry| 14 rows, 0 CRITICAL GAPS                    |
+  | Failure modes        | 6 total, 0 CRITICAL GAPS                    |
+  | TODOS.md updates     | 2 items (Poshmark, GUI batch view)          |
+  | Scope proposals      | 0 proposed, 0 accepted (REDUCTION mode)     |
+  | CEO plan             | skipped by mode                             |
+  | Outside voice        | codex: unavailable (missing marker); 10 findings verified and used |
+  | Lake Score           | N/A                                         |
+  | Diagrams produced    | 3 (system, state machine, phases)           |
+  | Stale diagrams found | 0                                           |
+  | Unresolved decisions | 4 (P1, P2, P3, O6 for eng review)           |
+  | Reality rows         | 7/7 rows, 1 unverified                      |
+  +====================================================================+
+```
+
+Approval readiness: PASS. Checked D1, D2, D3 (as amended by O7), D4, D5, D6, O1, O4, O5 and O7 against Sam's answers in this session. O2, O3, O8 and O9 are determined by the approved Success Criteria and crash contract. P1, P2, P3 and O6 stay pending for /plan-eng-review.
+
+## GSTACK REVIEW REPORT
+
+| Review | Trigger | Why | Runs | Status | Findings |
+|--------|---------|-----|------|--------|----------|
+| CEO Review | `/plan-ceo-review` | Scope & strategy | 1 | ISSUES OPEN | mode: SCOPE_REDUCTION, 0 critical gaps |
+| Outside Review | codex (plan-review, via CEO review) | Independent 2nd opinion | 1 | unavailable | missing recommendation marker; no completed external review (10 findings verified natively and resolved) |
+| Eng Review | `/plan-eng-review` | Architecture & tests (required) | 0 | — | — |
+| Design Review | `/plan-design-review` | UI/UX gaps | 0 | — | — |
+| DX Review | `/plan-devex-review` | Developer experience gaps | 0 | — | — |
+
+- **OUTSIDE COVERAGE:** codex, plan-review phase, unavailable (the gate's recommendation marker was missing). Its 10 findings were checked against the code and resolved in the ledger (O1 to O10).
+- **VERDICT:** CEO review complete with 4 decisions left for the eng review. Eng review required.
+
+**UNRESOLVED DECISIONS:**
+- P1: the open-tab window size for the Depop session (owner: /plan-eng-review)
+- P2: the Media API host, scope, multipart contract and beta status (owner: /plan-eng-review)
+- P3: the Depop script test method: a fixture plus a live listing (owner: /plan-eng-review)
+- O6: packaging playwright in the desktop build (owner: /plan-eng-review)
