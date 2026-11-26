@@ -448,7 +448,7 @@ Coverage: **unavailable**. The reply was complete but lacked the gate's recommen
 
 - `src/pipeline.ts` turns photos into attributes, comps, price and listings. Reused as is.
 - `src/draft-file.ts` (`DraftFile`, `postDraft`, `withDraftLock`, `writeDraftFile`) is reused. The lock is upgraded (O8) and intake becomes idempotent (O2).
-- `src/publish.ts` (`publishDraftBundle`, `mergePublishResults`, `PlatformPublishResult`) is reused behind the adapter seam. The skip and merge rules gain `unknown`.
+- `src/publish.ts` (`publishDraftBundle`, `mergePublishResults`, `PlatformPublishResult`) stays the single per-market dispatcher; its `deps` gains a runner-owned `browserSession` (E2). The skip and merge rules gain `unknown`.
 - `src/ebay/sell.ts` (inventory, offer, publish) is reused, with offer resume added (O3).
 - `src/browser-automation.ts`: its Playwright loader and host checks are reused. The per-call launch and tool-side click are replaced.
 - `src/cli.ts` has the command spec table, the JSON envelope and exit codes; `post-batch`, `status --batch` and `mark` are added to it.
@@ -497,8 +497,8 @@ System:
    post-batch / status │              publish panel (GUI drafts only)
    mark                │                   │
                        v                   v
-                 batch runner ── adapters ─┬─ eBay adapter ── ebay/media (new) + ebay/sell (offer resume)
-                       │                   └─ Depop adapter ── Playwright persistent ctx (%LOCALAPPDATA% profile)
+                 batch runner ── publishDraftBundle(deps.browserSession) ─┬─ eBay ── ebay/media (new) + ebay/sell (offer resume)
+                       │                   └─ Depop ── browserSession: installed Chrome, %LOCALAPPDATA% profile, connectOverCDP (E3)
                        │                                           └─ depop-fill script (per-site code)
                        v
           batch/<item>/draft.json  (DraftFile; per-market fields; states)   batch/batch.json (index)
@@ -533,14 +533,14 @@ Two phases:
   - Surfaced by: Next Step 2, S2.
   - Files: `src/types.ts`, `src/brain/listing.ts`.
   - Verify: unit tests for a valid map, malformed JSON and invalid category.
-- [ ] **T3 (P1, human ~3h / CC ~20min)**: publish. Add the adapter seam and the state rules: skip and keep `unknown` for browser markets only (D6), `not_posted`, `held`, and the exit code from merged state (O9).
+- [ ] **T3 (P1, human ~3h / CC ~20min)**: publish. Pass a runner-owned `browserSession` through `publishDraftBundle`'s `deps` (no adapter interface, E2) and add the state rules: skip and keep `unknown` for browser markets only (D6), `not_posted`, `held`, and the exit code from merged state (O9).
   - Surfaced by: S4, D6, O9.
   - Files: `src/publish.ts`, `src/draft-file.ts`.
   - Verify: unit tests for the transition table.
-- [ ] **T4 (P1, human ~6h / CC ~45min)**: depop. Write the assisted-fill script in a persistent `%LOCALAPPDATA%` profile, with submit detection, the eBay-active check, the run log and error screenshots.
+- [ ] **T4 (P1, human ~6h / CC ~45min)**: depop. Write the assisted-fill script, attached over CDP to installed Chrome running a dedicated `%LOCALAPPDATA%` profile with a localhost debug port (E3), with submit detection, the eBay-active check, the run log and error screenshots.
   - Surfaced by: Next Step 4, D4, D5, O4.
-  - Files: `src/depop-fill.ts` (new), `src/browser-automation.ts`.
-  - Verify: Playwright run against a saved sell-form fixture (P3), plus one live listing.
+  - Files: `src/depop-fill.ts` (new), `src/browser-automation.ts`, `package.json` (`playwright` → `playwright-core`, drop its build exclusion, E6).
+  - Verify: unit tests; offline Playwright tests against a saved sell-form fixture page in `npm test`; a live selector preflight at session start that halts with the missing field named (E5); plus one live listing.
 - [ ] **T5 (P1, human ~4h / CC ~30min)**: cli. Add `post-batch` (two phases, idempotent intake, the held rule), `status --batch`, `mark` and a pid lock.
   - Surfaced by: D2, D3, O1, O2, O5, O8.
   - Files: `src/cli.ts`, `src/draft-file.ts`, `src/batch.ts` (new).
@@ -601,6 +601,209 @@ REALITY: pr-count pass no ship-policy; default one PR per wave src/draft-file.ts
 ```
 
 Approval readiness: PASS. Checked D1, D2, D3 (as amended by O7), D4, D5, D6, O1, O4, O5 and O7 against Sam's answers in this session. O2, O3, O8 and O9 are determined by the approved Success Criteria and crash contract. P1, P2, P3 and O6 stay pending for /plan-eng-review.
+
+## Eng Review (2026-11-26)
+
+Target: this document, as it stood after the CEO review (commit b37fbc9).
+
+### Scope Challenge
+
+- **What already exists.**
+  - `publishDraftBundle` already orchestrates every market. It takes injected `deps.publishEbay` and `deps.publishBrowser` (`src/publish.ts:46`, `:169-170`, `:226`).
+  - The Media API scope `sell.inventory` is already requested (`src/config.ts:40`).
+  - `playwright` is already a dependency (`package.json:38`).
+- **Complexity.** About 18 changed files [estimated: plan T1 to T6] and 3 new modules (`ebay/media.ts`, `depop-fill.ts`, `batch.ts`). That trips the complexity gate (8+ files, 2+ new modules).
+- **P2 resolved (factual, from eBay's docs).** The Media API's `createImageFromFile` is `POST https://apim.ebay.com/commerce/media/v1_beta/image/create_image_from_file`, sent as multipart/form-data with scope `sell.inventory`. The image id comes back in the `Location` header, and `getImage` returns the EPS URL for `imageUrls`. Rate limit: 50 POSTs per 5 s per user. It is still a v1_beta API. The multipart field name is still unverified; check the method's Samples during T1. Sources: [createImageFromFile](https://www.developer.ebay.com/api-docs/commerce/media/resources/image/methods/createImageFromFile), [OpenAPI spec](https://www.developer.ebay.com/api-docs/master/commerce/media/openapi/3/commerce_media_v1_beta_oas3.json).
+- **Design-twice (new boundary: the adapter seam).**
+  - Shape 1, the plan: a new `{post, status?, delist?}` adapter interface, with a runner that calls the adapters.
+  - Shape 2: no new interface. `publishDraftBundle` stays the single orchestrator, and its `deps` gains a long-lived `browserSession` that the batch runner owns and passes in. Poshmark later becomes one more branch plus one more script.
+  - Red flag in Shape 1: two ways to do one task, since the adapters and `publishDraftBundle` would both dispatch per market.
+  - Depth: Shape 2 hides the per-market policy behind the existing single entry point.
+- **New finding: login.** Depop offers Google and Apple sign-in. Google blocks sign-in inside Playwright-launched browsers ("This browser may not be secure"). The community-standard fix is a normal Chrome started with a dedicated `--user-data-dir` and a remote-debugging port: Sam signs in by hand, then Playwright attaches with `connectOverCDP` ([troubleshooting guide](https://sunwood-ai-labs.github.io/logged-in-google-chrome-skill/guide/troubleshooting)). The plan has this as the fallback; the evidence says it should be the default.
+
+### Eng decision ledger (pending until answered)
+
+| ID | Finding | Current | Options | Recommendation | State |
+|---|---|---|---|---|---|
+| E1 structure | 3 new modules over about 18 files | Original: `ebay/media.ts`, `depop-fill.ts`, `batch.ts` | A) Original; B) Smaller: media in `ebay/sell.ts`, batch in `draft-file.ts`, only `depop-fill.ts` new | A: media has its own host, multipart body and beta status; batch is its own concern | approved: A (D1, 2026-11-26) |
+| E2 seam | Adapter interface duplicates `publishDraftBundle` dispatch (`src/publish.ts:169-226`) | Adapter seam (CEO kept) | A) Shape 2: extend `deps` with `browserSession`, no new interface; B) Shape 1: adapter interface | A: one orchestrator, smaller surface | approved: A (D2, 2026-11-26) |
+| E3 identity | Google sign-in blocks Playwright-launched browsers | Persistent Playwright profile by default, CDP as the fallback | A) CDP default: launch installed Chrome with the `%LOCALAPPDATA%` profile (D5) plus a debug port, then `connectOverCDP`; B) Keep persistent Playwright by default | A: works with Google and Apple sign-in, and needs only `playwright-core` | approved: A (D3, 2026-11-26) |
+| E4 tabs (P1) | How many Depop tabs open at once | unresolved | A) Rolling window of 3, `--tabs N`; B) One at a time; C) All at once | A: Sam reviews one while the next fills; memory stays bounded | approved: A (D4, 2026-11-26) |
+| E5 tests (P3) | How to prove the Depop script | unresolved | A) Unit tests + local fixture page + a live selector preflight at session start; B) Unit + fixture only; C) Live manual only | A: the preflight catches Depop form changes before Sam's session | approved: A (D5, 2026-11-26) |
+| E6 packaging (O6) | The packaged build excludes playwright (`package.json:72-73`) | First cut runs from source | A) Depend on `playwright-core` only, stop excluding it from the build, verify one fill from the packaged app; B) Source-run desktop and CLI only | A: with E3's CDP mode no bundled browser is needed, so this is small | approved: A (D6, 2026-11-26) |
+
+**Scope record:** feature answers: none asked (CEO review already reduced scope); structure: A, Original arrangement (D1, 2026-11-26, resumed review); accepted scope: the CEO-approved plan as written, 3 new modules `src/ebay/media.ts`, `src/depop-fill.ts`, `src/batch.ts`; pending remedies: E2, E3, E4, E5, E6.
+
+### E2: dispatch seam for browser markets
+Finding: 1, INFORMATIONAL, confidence 9/10, `src/publish.ts:169-226`, eng review (design-twice red flag 6, two ways to do one task).
+Plan baseline: CEO plan T3, "Add the adapter seam" (a new `{post, status?, delist?}` adapter interface plus a runner that calls adapters).
+Runtime evidence: `publishDraftBundle` already dispatches per market and takes injected `deps.publishEbay` / `deps.publishBrowser` (`src/publish.ts:46`, `:169-170`, `:226`); static read.
+Comparison grid:
+
+| Choice | Current | A | B |
+|---|---|---|---|
+| E2 seam | adapter interface (CEO plan, unbuilt) | no new interface; `deps` gains a `browserSession` the batch runner owns | adapter interface as planned |
+| E1 structure | approved A (D1) | unchanged | unchanged |
+| E3-E6 | pending | pending | pending |
+
+Question D2:
+D2 — E2: how the batch runner hands work to each market
+Project/branch/task: resell-agent on main, eng review of docs/designs/multi-market-listing.md.
+ELI10: publishDraftBundle in src/publish.ts already decides how each market posts, and already accepts swappable publishers. The CEO plan adds a new adapter interface on top, which would give the repo two places that decide how a market posts. The alternative adds nothing new: the batch runner opens one browser session and passes it into publishDraftBundle. Poshmark later is one more branch plus one more script.
+Stakes if we pick wrong: two dispatchers drift apart and a future change fixes one and not the other.
+Recommendation: Extend publishDraftBundle because one place should decide how each market posts.
+Note: options differ in kind, not coverage — no completeness score.
+Pros / cons: see options.
+Net: one orchestrator with a passed-in session vs. a class per market.
+Header: Seam
+Options:
+A) Extend publishDraftBundle (recommended)
+No new interface; deps gains a long-lived browserSession owned by the batch runner. (human ~2h less / CC ~10min less) ✅ One place decides how each market posts, so nothing drifts ✅ The existing publish tests keep covering the dispatch rules ❌ Adding the Depop Partner API later edits publishDraftBundle instead of adding a class
+B) Adapter interface
+A new {post, status?, delist?} interface with one adapter per market, as the CEO plan says. ✅ Each market sits in its own class with one contract ✅ Matches the CEO plan's wording, so no plan text changes ❌ Two dispatchers that a future agent can update out of sync
+
+State: approved
+Actual answer: A) Extend publishDraftBundle (D2, Sam, 2026-11-26)
+Accepted scope: no adapter interface; `publishDraftBundle` stays the only per-market dispatcher; its `deps` gains a long-lived `browserSession` the batch runner owns and passes in. T3 and the system diagram are amended to match.
+History: first drafted in the interrupted session (2026-11-26 17:47), never answered.
+
+### E3: how the Depop browser signs in
+Finding: 2, CRITICAL, confidence 7/10, plan T4 ("persistent `%LOCALAPPDATA%` profile"), eng review web research.
+Plan baseline: CEO D5, persistent Playwright-launched profile in `%LOCALAPPDATA%` by default; CDP attach to real Chrome as the fallback.
+Runtime evidence: none in code yet (`src/browser-automation.ts` launches per call). Google blocks sign-in inside automation-launched browsers ("This browser may not be secure"), per the troubleshooting guide cited in the Scope Challenge; unverified against Depop itself.
+Comparison grid:
+
+| Choice | Current | A | B |
+|---|---|---|---|
+| E3 sign-in default | Playwright persistent profile; CDP fallback | real installed Chrome, dedicated `%LOCALAPPDATA%` profile (D5 kept), debug port on localhost, `connectOverCDP` | Playwright persistent profile (as planned) |
+| D5 profile location | approved `%LOCALAPPDATA%` | unchanged | unchanged |
+| E2 seam | approved A (D2) | unchanged (`browserSession` wraps the CDP connection) | unchanged (wraps the persistent context) |
+| E4-E6 | pending | pending | pending |
+
+Question D3:
+D3 — E3: how the Depop browser signs in
+Project/branch/task: resell-agent on main, eng review of docs/designs/multi-market-listing.md.
+ELI10: Depop lets you sign in with Google or Apple, and Google blocks sign-in inside browsers that Playwright launches ("This browser may not be secure"). The standard fix: open your real installed Chrome with its own dedicated profile (in %LOCALAPPDATA%, per D5). You sign in by hand once, and the script attaches to that Chrome. The plan has this as the fallback; I'd make it the default.
+Stakes if we pick wrong: if you use Google sign-in on Depop, the first Depop session dies at the login screen.
+Recommendation: Real Chrome + attach because it works however you sign in to Depop.
+Note: options differ in kind, not coverage — no completeness score.
+Pros / cons: see options.
+Net: depend on installed Chrome vs. risk a blocked Google login.
+Header: Sign-in
+Options:
+A) Real Chrome + attach (recommended)
+Default: launch installed Chrome with a dedicated %LOCALAPPDATA% profile and a localhost debug port, then connectOverCDP. (human ~1h / CC ~10min) ✅ Works however you sign in to Depop, Google included ✅ Needs only the small playwright-core, no bundled browser download ❌ Needs Chrome installed, and a debug port is open on localhost while it runs
+B) Playwright browser default
+Keep the planned persistent Playwright profile; CDP stays a fallback. ✅ Self-contained, works without Chrome installed ✅ No debug port open on the machine during a session ❌ If you use Google sign-in on Depop, the first session fails at login
+
+State: approved
+Actual answer: A) Real Chrome + attach (D3, Sam, 2026-11-26)
+Accepted scope: default Depop session = launch installed Chrome with a dedicated `%LOCALAPPDATA%` profile (D5 location kept) and a localhost-only debug port, then `connectOverCDP`; Sam signs in by hand once. Depends on `playwright-core` only. T4 and the system diagram are amended to match.
+History: first drafted in the interrupted session (2026-11-26 17:47), never answered.
+
+### E4: how many Depop tabs are open at once (P1)
+Finding: 3, INFORMATIONAL, confidence 8/10, CEO Section 7 (Perf) "tab window, pending P1"; eng review.
+Plan baseline: unresolved (P1).
+Runtime evidence: none in code; each filled tab holds a full Depop page (memory per tab unknown, not measured).
+Comparison grid:
+
+| Choice | Current | A | B | C |
+|---|---|---|---|---|
+| E4 open tabs | unresolved | rolling window of 3, override with `--tabs N` | 1 at a time | every eligible item at once |
+| E2 / E3 | approved A / A | unchanged | unchanged | unchanged |
+| E5, E6 | pending | pending | pending | pending |
+
+Question D4:
+D4 — E4: how many filled Depop tabs are open at once
+Project/branch/task: resell-agent on main, eng review of docs/designs/multi-market-listing.md.
+ELI10: In the Depop session, the script fills a sell form in a tab and waits for you to check it and click Post. This decides how many filled tabs are ready at once. More tabs means less waiting between items but more memory, and a crash marks every open filled tab as "unknown" for you to verify.
+Stakes if we pick wrong: too few and you wait 10-20s per item; too many and Chrome bogs down and a crash leaves a pile of unknowns.
+Recommendation: Rolling window of 3 because the next item is ready while you post the current one, and memory stays bounded.
+Note: options differ in kind, not coverage — no completeness score.
+Pros / cons: see options.
+Net: waiting time vs. memory and crash blast radius.
+Header: Tabs
+Options:
+A) Rolling window of 3 (recommended)
+3 filled tabs at a time; a new one fills when you post or close one; --tabs N overrides. ✅ No waiting between items while you post the current one ✅ Bounded memory and at most 3 unknowns after a crash, even for 50 items ❌ Slightly more state to track than one tab at a time
+B) One at a time
+Fill one tab, wait for you, then fill the next. ✅ Simplest code and the smallest possible crash blast radius ✅ Lowest memory use on the machine ❌ You wait 10-20s for each fill between posts
+C) All at once
+Fill every eligible item up front. ✅ Everything is ready before you start posting ✅ No refill logic needed at all ❌ 30 Depop tabs at once is heavy, and a crash marks them all unknown
+
+State: approved
+Actual answer: A) Rolling window of 3 (D4, Sam, 2026-11-26)
+Accepted scope: at most 3 filled Depop tabs at once (default 3, `--tabs N` overrides, N >= 1); a new tab fills when Sam posts or closes one. Resolves P1.
+History: first drafted in the interrupted session (2026-11-26 17:47), never answered.
+
+### E5: how the Depop fill script is proven (P3)
+Finding: 4, CRITICAL, confidence 8/10, Failure Modes Registry "depop fill | Depop changes its form | fixture (P3)"; eng review.
+Plan baseline: T4 verify = "Playwright run against a saved sell-form fixture (P3), plus one live listing"; method unresolved (P3).
+Runtime evidence: no Depop code or fixture exists; repo tests are `node --test` over `dist/**/*.test.js` (`package.json` scripts.test).
+Comparison grid:
+
+| Choice | Current | A | B | C |
+|---|---|---|---|---|
+| E5 proof | unresolved | unit tests + saved sell-form fixture page + live selector preflight at session start | unit tests + fixture only | live manual run only |
+| Live form-change detection | none | before any tab fills, every required selector checked on the live form; missing one halts Depop with the field named | at fill time only (per-tab error) | at fill time only |
+| E2-E4 | approved | unchanged | unchanged | unchanged |
+| E6 | pending | pending | pending | pending |
+
+Question D5:
+D5 — E5: how we prove the Depop fill script works
+Project/branch/task: resell-agent on main, eng review of docs/designs/multi-market-listing.md.
+ELI10: The Depop script finds form fields by their page selectors. When Depop changes its sell form, the script breaks. Unit tests cover our logic; a saved copy of the sell form lets tests fill a real-looking page offline; a quick check at the start of each session confirms the live form still has every field before any tab fills.
+Stakes if we pick wrong: without the preflight, a Depop form change shows up as errors on every tab mid-session instead of one clear message up front.
+Recommendation: Unit + fixture + preflight because it catches a changed form before you start posting.
+Completeness: A=9/10, B=7/10, C=3/10
+Pros / cons: see options.
+Net: a few minutes of build time vs. finding a broken form mid-session.
+Header: Tests
+Options:
+A) Unit + fixture + preflight (recommended)
+Unit tests, a saved sell-form fixture page for offline Playwright tests, and a live selector check at session start that halts with the missing field named. (human ~3h / CC ~20min) ✅ A changed Depop form is caught before any tab fills ✅ Offline tests run on every npm test without touching Depop ❌ The fixture goes stale and needs a refresh when Depop changes
+B) Unit + fixture only
+Same offline tests, no live check at session start. (human ~2h / CC ~15min) ✅ Offline tests still run on every npm test ✅ Less code than adding the preflight check ❌ A changed live form surfaces as per-tab errors during the session
+C) Live manual only
+Prove it by running one real listing by hand. ✅ Cheapest to set up, nothing to maintain ✅ Tests the real Depop site, not a copy ❌ No regression coverage, so breakage shows up only in a live session
+
+State: approved
+Actual answer: A) Unit + fixture + preflight (D5, Sam, 2026-11-26)
+Accepted scope: unit tests for the fill logic; a saved Depop sell-form fixture page driven by offline Playwright tests in `npm test`; a live selector preflight at Depop session start that checks every required selector before any tab fills and halts Depop with the missing field named. Plus the one live listing T4 already requires. Resolves P3.
+History: first drafted in the interrupted session (2026-11-26 17:47), never asked.
+
+### E6: packaged desktop app and the Depop session (O6)
+Finding: 5, INFORMATIONAL, confidence 9/10, `package.json:72-73` (`"!node_modules/playwright/**"`, `"!node_modules/playwright-core/**"`); CEO outside-voice O6.
+Plan baseline: first cut runs from source; the packaged build has no Playwright.
+Runtime evidence: the electron-builder file list excludes both packages (static read, `package.json:72-73`); `playwright` is a dependency at `package.json:38`. With E3 (CDP attach to installed Chrome) no bundled browser binary is needed.
+Comparison grid:
+
+| Choice | Current | A | B |
+|---|---|---|---|
+| E6 packaged Depop | not available (playwright excluded) | depend on `playwright-core` only, stop excluding it, verify one fill from the packaged app | source-run desktop and CLI only; packaged app has no Depop session |
+| E3 | approved A (CDP) | unchanged | unchanged |
+| E2, E4, E5 | approved | unchanged | unchanged |
+
+Question D6:
+D6 — E6: should the installed desktop app run Depop sessions
+Project/branch/task: resell-agent on main, eng review of docs/designs/multi-market-listing.md.
+ELI10: The packaged desktop app (the installer build) currently leaves out Playwright, the library that drives Chrome. So Depop sessions would only work when the app runs from source. Since E3 attaches to your installed Chrome, we only need the small playwright-core library, no bundled browser. Including it lets the installed app run Depop too.
+Stakes if we pick wrong: a packaged build silently can't run Depop, and you find out mid-session.
+Recommendation: Ship playwright-core because it's small now that no browser is bundled.
+Completeness: A=9/10, B=6/10
+Pros / cons: see options.
+Net: a slightly bigger installer vs. Depop only from source.
+Header: Packaging
+Options:
+A) Ship playwright-core (recommended)
+Swap the dependency to playwright-core, stop excluding it from the build, verify one fill from the packaged app. (human ~1h / CC ~10min) ✅ The installed app runs Depop sessions, not just the source checkout ✅ No browser download, since E3 attaches to your installed Chrome ❌ Installer grows by a few MB and needs one packaged-app check
+B) Source-run only
+Keep the exclusion; Depop runs only via the CLI or npm run desktop from source. ✅ No packaging change and no extra installer size ✅ Nothing new to verify in the packaged build ❌ The installed app can't run Depop, so it must show a clear message instead
+
+State: approved
+Actual answer: A) Ship playwright-core (D6, Sam, 2026-11-26)
+Accepted scope: replace the `playwright` dependency with `playwright-core`; drop the `!node_modules/playwright-core/**` exclusion from the electron-builder file list (`package.json:73`); verify one Depop fill from the packaged app. Added to T4.
+History: first drafted in the interrupted session (2026-11-26 17:47), never asked.
 
 ## GSTACK REVIEW REPORT
 
