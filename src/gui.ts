@@ -365,7 +365,7 @@ function renderPage(boot: GuiBootState): string {
             </div>
             <div class="two-col">
               <label>Anthropic base URL<input id="setting-anthropic-base-url" type="url" placeholder="https://api.anthropic.com" /></label>
-              <label>Anthropic model<input id="setting-anthropic-model" type="text" placeholder="claude-sonnet-5" /></label>
+              <label>Anthropic model<input id="setting-anthropic-model" type="text" placeholder="claude-sonnet-5-5" /></label>
             </div>
             <div class="two-col">
               <label>eBay client ID<input id="setting-ebay-client-id" type="text" autocomplete="off" /></label>

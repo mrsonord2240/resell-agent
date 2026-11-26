@@ -35,7 +35,7 @@ export async function complete(system: string, messages: Msg[], maxTokens = 1000
       "anthropic-version": "2023-06-01",
       "Content-Type": "application/json",
     },
-    body: JSON.stringify({ model: process.env.ANTHROPIC_MODEL ?? "claude-sonnet-5", max_tokens: maxTokens, system, messages }),
+    body: JSON.stringify({ model: process.env.ANTHROPIC_MODEL ?? "claude-sonnet-5-5", max_tokens: maxTokens, system, messages }),
   });
   if (!res.ok) throw new Error(`anthropic ${res.status}: ${await res.text()}`);
 
