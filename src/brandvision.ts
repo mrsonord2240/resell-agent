@@ -65,11 +65,11 @@ export async function matchBrand(imagePath: string): Promise<BrandMatch | null> 
 
     // Fallback: zero-shot against the curated label list (no index built yet).
     // @ts-ignore optional dependency, resolved at runtime when ENABLE_BRAND_MATCH is set
-    const mod: any = await import("@xenova/transformers");
+    const mod: any = await import("@huggingface/transformers");
     const classify = await mod.pipeline("zero-shot-image-classification", "Xenova/clip-vit-base-patch32");
     return pickBrand(await classify(imagePath, BRANDS.map(label)));
   } catch (e) {
-    console.warn(`brand match unavailable (${String(e)}); skipping. Set ENABLE_BRAND_MATCH and install @xenova/transformers.`);
+    console.warn(`brand match unavailable (${String(e)}); skipping. Set ENABLE_BRAND_MATCH and install @huggingface/transformers.`);
     return null;
   }
 }

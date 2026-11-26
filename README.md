@@ -372,7 +372,7 @@ Image URLs must be publicly reachable (eBay pulls them). Host them somewhere fir
   lead to confirm, never proof):
   - `ENABLE_BRAND_MATCH=1` runs a **local CLIP visual match** (`src/brandvision.ts`,
     transformers.js) over the photo bytes. Ours, no scraping/key/ToS risk; first run
-    downloads a ~150MB model (`npm i @xenova/transformers`). Two modes:
+    downloads a ~150MB model (`npm i @huggingface/transformers`). Two modes:
     - **Nearest-neighbour over your own catalog** (the durable core). Drop reference
       photos into `refs/<Brand>/*.jpg` (or `refs/Brand__desc.jpg`), then
       `npm run index -- --dir refs` builds `brand-index.json` (`src/nnindex.ts`, brute-force

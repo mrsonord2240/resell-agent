@@ -7,7 +7,7 @@ let extractorP: Promise<any> | null = null;
 async function extractor(): Promise<any> {
   if (!extractorP) {
     // @ts-ignore optional dependency, resolved at runtime
-    const mod: any = await import("@xenova/transformers");
+    const mod: any = await import("@huggingface/transformers");
     extractorP = mod.pipeline("image-feature-extraction", "Xenova/clip-vit-base-patch32");
   }
   return extractorP;

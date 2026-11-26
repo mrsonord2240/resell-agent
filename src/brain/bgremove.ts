@@ -1,5 +1,6 @@
 import { writeFileSync } from "node:fs";
-import { extname } from "node:path";
+import { extname, resolve } from "node:path";
+import { pathToFileURL } from "node:url";
 
 // Strip the background from a product photo. Outputs a transparent PNG, which is
 // what eBay wants — its product view composites onto white, so no white-fill step
@@ -23,7 +24,9 @@ async function loadRemoveBackground(): Promise<(input: string) => Promise<Blob>>
 export async function cleanPhoto(path: string, outPath = cleanPath(path)): Promise<string> {
   let blob: Blob;
   try {
-    blob = await (await loadRemoveBackground())(path);
+    // A file URL, not a bare path: imgly parses strings as URLs, so a Windows
+    // path like C:/x.jpg reads as protocol "c:" and fails.
+    blob = await (await loadRemoveBackground())(pathToFileURL(resolve(path)).href);
   } catch (e) {
     // Almost always the native deps (sharp/onnxruntime-node) not built or the
     // first-run model download failing — not a bug in this code. Say so plainly.
