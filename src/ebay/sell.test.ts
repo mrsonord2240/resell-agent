@@ -37,7 +37,12 @@ function stub(offers: unknown[]): void {
   bodies = {};
   const routes: Route[] = [
     (url) => (url.endsWith("/identity/v1/oauth2/token") ? Response.json({ access_token: "t", expires_in: 7200 }) : undefined),
-    (url, init) => (url.includes("/sell/inventory/v1/offer?sku=") && init.method === "GET" ? Response.json({ offers }) : undefined),
+    // Like eBay: a SKU with no offers is a 404 (errorId 25713), not an empty list.
+    (url, init) => (url.includes("/sell/inventory/v1/offer?sku=") && init.method === "GET"
+      ? (offers.length
+        ? Response.json({ offers })
+        : Response.json({ errors: [{ errorId: 25713, message: "This Offer is not available." }] }, { status: 404 }))
+      : undefined),
     (url) => (url.endsWith("/create_image_from_file") ? Response.json({ imageUrl: "https://i.ebayimg.com/front.jpg" }, { status: 201 }) : undefined),
     (url, init) => (url.includes("/inventory_item/") && init.method === "PUT" ? new Response(null, { status: 204 }) : undefined),
     (url, init) => (/\/offer\/[^/]+$/.test(url) && init.method === "PUT" ? new Response(null, { status: 204 }) : undefined),
@@ -49,6 +54,11 @@ function stub(offers: unknown[]): void {
     const method = init.method ?? "GET";
     if (!url.endsWith("/oauth2/token")) calls.push(`${method} ${url.replace(/^https:\/\/[^/]+/, "")}`);
     if (typeof init.body === "string") bodies[`${method} ${url.replace(/^https:\/\/[^/]+/, "")}`] = JSON.parse(init.body);
+    // Like eBay: Node's fetch sends "Accept-Language: *" unless told otherwise, and eBay rejects that (errorId 25709).
+    const lang = new Headers(init.headers).get("accept-language");
+    if (!url.endsWith("/oauth2/token") && (!lang || lang === "*")) {
+      return Response.json({ errors: [{ errorId: 25709, message: "Invalid value for header Accept-Language." }] }, { status: 400 });
+    }
     for (const route of routes) {
       const res = route(url, init);
       if (res) return res;

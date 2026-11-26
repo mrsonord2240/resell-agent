@@ -15,6 +15,8 @@ const MEDIA_PATH = "/commerce/media/v1_beta/image";
 const MAX_ATTEMPTS = 4;
 const DEFAULT_RETRY_MS = 5_000;
 const REQUEST_TIMEOUT_MS = 60_000;
+// Node's fetch defaults to "Accept-Language: *", which eBay rejects (errorId 25709).
+const ACCEPT_LANGUAGE = "en-US";
 
 const MIME_BY_EXT: Record<string, string> = {
   ".jpg": "image/jpeg",
@@ -89,7 +91,7 @@ async function uploadOne(path: string, mime: string, deps: Required<MediaDeps>):
     // No Content-Type header: fetch sets multipart/form-data with its boundary.
     const res = await withTimeout(deps.fetchImpl, `${deps.base}${MEDIA_PATH}/create_image_from_file`, {
       method: "POST",
-      headers: { Authorization: `Bearer ${token}` },
+      headers: { Authorization: `Bearer ${token}`, "Accept-Language": ACCEPT_LANGUAGE },
       body: form,
     });
     const text = await res.text();
@@ -105,7 +107,7 @@ async function uploadOne(path: string, mime: string, deps: Required<MediaDeps>):
     if (!location) throw new Error(`eBay photo upload: ${name} returned no imageUrl and no Location header.`);
     const info = await withTimeout(deps.fetchImpl, location, {
       method: "GET",
-      headers: { Authorization: `Bearer ${token}` },
+      headers: { Authorization: `Bearer ${token}`, "Accept-Language": ACCEPT_LANGUAGE },
     });
     const infoText = await info.text();
     if (!info.ok) throw failure(name, info, infoText);

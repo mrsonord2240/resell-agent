@@ -14,7 +14,7 @@ writeFileSync(back, Buffer.from([0x89, 0x50, 0x4e, 0x47]));
 const BASE = "https://apim.ebay.com";
 const CREATE = `${BASE}/commerce/media/v1_beta/image/create_image_from_file`;
 
-interface Seen { url: string; method: string; auth: string; field?: File | null }
+interface Seen { url: string; method: string; auth: string; lang?: string | null; field?: File | null }
 
 function deps(responses: Array<() => Response>, seen: Seen[], slept: number[] = []): MediaDeps {
   return {
@@ -27,6 +27,7 @@ function deps(responses: Array<() => Response>, seen: Seen[], slept: number[] = 
         url: String(input),
         method: init?.method ?? "GET",
         auth: new Headers(init?.headers).get("authorization") ?? "",
+        lang: new Headers(init?.headers).get("accept-language"),
         field: body instanceof FormData ? (body.get("image") as File | null) : undefined,
       });
       const next = responses.shift();
@@ -45,6 +46,7 @@ const created = (url: string) => () => new Response(JSON.stringify({ imageUrl: u
   assert.deepEqual(urls, ["https://i.ebayimg.com/a.jpg", "https://i.ebayimg.com/b.jpg"]);
   assert.deepEqual(seen.map((s) => [s.method, s.url]), [["POST", CREATE], ["POST", CREATE]]);
   assert.equal(seen[0].auth, "Bearer user-token");
+  assert.equal(seen[0].lang, "en-US"); // eBay rejects Node fetch's default "Accept-Language: *"
   assert.equal(seen[0].field?.name, "front.jpg");
   assert.equal(seen[0].field?.type, "image/jpeg");
   assert.equal(seen[1].field?.type, "image/png");

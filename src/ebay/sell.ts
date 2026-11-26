@@ -29,11 +29,13 @@ async function ebayFetch(path: string, init: RequestInit) {
         Authorization: `Bearer ${token}`,
         "Content-Type": "application/json",
         "Content-Language": "en-US",
+        // Node's fetch defaults to "Accept-Language: *", which eBay rejects (errorId 25709).
+        "Accept-Language": "en-US",
         ...(init.headers ?? {}),
       },
     });
     const text = await res.text();
-    if (!res.ok) throw new Error(`${path} -> ${res.status} ${text}`);
+    if (!res.ok) throw Object.assign(new Error(`${path} -> ${res.status} ${text}`), { status: res.status });
     return text ? JSON.parse(text) : {};
   } finally {
     clearTimeout(timeout);
@@ -59,7 +61,14 @@ interface ExistingOffer {
 }
 
 async function existingOffers(sku: string): Promise<ExistingOffer[]> {
-  const result = await ebayFetch(`/sell/inventory/v1/offer?sku=${encodeURIComponent(sku)}`, { method: "GET" });
+  let result: unknown;
+  try {
+    result = await ebayFetch(`/sell/inventory/v1/offer?sku=${encodeURIComponent(sku)}`, { method: "GET" });
+  } catch (error) {
+    // eBay answers 404 (errorId 25713) for a SKU with no offers yet.
+    if ((error as { status?: number }).status === 404) return [];
+    throw error;
+  }
   const offers = (result as { offers?: unknown })?.offers;
   if (!Array.isArray(offers)) return [];
   return offers.flatMap((raw): ExistingOffer[] => {
