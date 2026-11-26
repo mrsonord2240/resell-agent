@@ -3,7 +3,7 @@
 
 function req(name: string): string {
   const v = process.env[name];
-  if (!v) throw new Error(`Missing env ${name}. Copy .env.example to .env and fill it in.`);
+  if (!v) throw new Error(`Missing env ${name}. Add it to .env or the GUI Settings panel.`);
   return v;
 }
 

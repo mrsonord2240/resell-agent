@@ -108,9 +108,9 @@ screenshots into.
 ## Setup
 
 1. Install and build: `npm install && npm run build` (rebuild after any code change)
-2. `cp .env.example .env` and fill in host/model and any eBay keys.
-   Put the gateway secret alone in `.api` (copy `.api.example`). The app
-   reads `.api` at startup; do not put the key in `.env`.
+2. Create a `.env` (gitignored) with `ANTHROPIC_API_KEY` (or `ANTHROPIC_AUTH_TOKEN`
+   for a gateway) and any eBay keys. Every other variable named in this README is
+   optional.
    - `EBAY_CLIENT_ID`, `EBAY_CLIENT_SECRET` from developer.ebay.com when using eBay
    - keep `EBAY_ENV=sandbox` until you are ready to list for real
 
@@ -128,20 +128,19 @@ set `EBAY_ENV=production`.
 
 The app uses the Anthropic Messages API directly. A third-party gateway can be
 used if it supports `POST /v1/messages`, Anthropic message/image blocks, and the
-response shape `{ "content": [{ "text": "..." }] }`. Put the host and model in
-`.env`. Put only the secret in `.api`. Claude Code's `~/.claude/settings.json`
-is not read by this Node app:
+response shape `{ "content": [{ "text": "..." }] }`. Put the host, model and
+token in `.env`. Claude Code's `~/.claude/settings.json` is not read by this
+Node app:
 
 ```
 # .env
 ANTHROPIC_BASE_URL=https://api.chr1.com
 ANTHROPIC_MODEL=[xy8-按量计费]claude-sonnet-5
-
-# .api  (one line: the key only)
+ANTHROPIC_AUTH_TOKEN=<gateway token>
 ```
 
 The gateway URL may include `/v1`; the app avoids adding that path twice. Do not
-paste the token into chat or commit `.env` or `.api`. Confirm that the provider supports
+paste the token into chat or commit `.env`. Confirm that the provider supports
 image input because the photo-to-attributes step sends base64 image blocks. A
 third-party gateway also has its own privacy, reliability, billing, and terms-of-
 service implications.
@@ -286,8 +285,8 @@ possibly published and must be checked before retrying to avoid duplicates.
 
 Useful GUI defaults are `GUI_DEFAULT_SKU` (an optional stable SKU prefix),
 `GUI_DEFAULT_MERCHANT_LOCATION_KEY`, `GUI_DEFAULT_FULFILLMENT_POLICY_ID`,
-`GUI_DEFAULT_PAYMENT_POLICY_ID`, and `GUI_DEFAULT_RETURN_POLICY_ID`; see
-[`.env.example`](.env.example). Do not expose the GUI remotely unless you
+`GUI_DEFAULT_PAYMENT_POLICY_ID`, and `GUI_DEFAULT_RETURN_POLICY_ID`, set in
+`.env`. Do not expose the GUI remotely unless you
 understand the risk and deliberately opt in.
 
 ### Optional browser-assisted flows
