@@ -529,7 +529,7 @@ Two phases:
 
 Amended by the eng review (2026-11-26); each task cites the decisions it carries.
 
-- [ ] **T1 (P1, human ~5h / CC ~35min)**: ebay. Upload photos through the Media API (sequential, back off on 429 with `Retry-After`, F6), and look up existing offers by SKU: resume an unpublished one (O3), record a published one as `published` (E8). Each eBay result records `env` (E13).
+- [x] **T1 (P1, human ~5h / CC ~35min, done 2026-11-26: first live listing 800970907772)**: ebay. Upload photos through the Media API (sequential, back off on 429 with `Retry-After`, F6), and look up existing offers by SKU: resume an unpublished one (O3), record a published one as `published` (E8). Each eBay result records `env` (E13).
   - Surfaced by: O3, P2, E8, E13, F6.
   - Files: `src/ebay/media.ts` (new), `src/ebay/sell.ts`, `src/publish.ts`, `src/gui.ts:723`, `src/config.ts`.
   - Verify: unit tests with a mocked fetch (upload, 401 scope error, 429 backoff, offer resume, published-offer found, env match and mismatch), plus one real eBay publish from local photos.
