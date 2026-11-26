@@ -294,7 +294,8 @@ async function cmdAuthExchange() {
   const code = argv.slice(1).find((a) => !a.startsWith("--"));
   if (!code) usage("the consent code is required");
   const t = await exchangeCode(decodeURIComponent(code));
-  if (!json) say(`\nAdd this to your .env:\n\nEBAY_USER_REFRESH_TOKEN=${t.refresh_token}`);
+  // Quoted: eBay tokens contain '#', which an unquoted .env value treats as a comment.
+  if (!json) say(`\nAdd this to your .env:\n\nEBAY_USER_REFRESH_TOKEN="${t.refresh_token}"`);
   return { refreshToken: t.refresh_token };
 }
 
