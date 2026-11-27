@@ -11,7 +11,7 @@
 // one-place fix. They are best-known values, NOT verified against the live form: the session-start
 // preflight (E14) is the real check, and Sam's first live session confirms the create request.
 
-import { mkdirSync } from "node:fs";
+import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { launchOrAttachChrome, acquireProfileLock, findChrome, marketProfileDir, isExpectedPlatformUrl, type ChromeHandle } from "./browser-automation.js";
 import { CliError } from "./draft-file.js";
@@ -589,6 +589,8 @@ export interface DepopSessionOptions {
   headless?: boolean;
   site?: DepopSite;
   log?: (line: string) => void;
+  /** Where a session-start halt saves the page it saw (screenshot + HTML). */
+  logDir?: string;
   /** Tests only: pacing of the wait loop. */
   timing?: { tickMs?: number; captureMs?: number; closeBurstMs?: number; settleMs?: number; now?: () => number };
 }
@@ -611,7 +613,7 @@ export interface DepopSession extends BrowserSession {
  */
 export function lazyDepopSession(
   ctx: Omit<DepopItemContext, "label">,
-  open: () => Promise<DepopSession> = () => openDepopSession()
+  open: () => Promise<DepopSession> = () => openDepopSession({ logDir: ctx.logDir })
 ): { session: BrowserSession; close: () => Promise<void> } {
   let opened: Promise<DepopSession> | null = null;
   return {
@@ -631,6 +633,32 @@ export function lazyDepopSession(
       if (opened) await (await opened.catch(() => null))?.close();
     },
   };
+}
+
+/**
+ * A session-start halt names the page it actually saw (a changed form and a "not authorized" page fail the
+ * same preflight) and saves it, so the real form's selectors can be read off it. Never throws.
+ */
+async function savePage(page: any, logDir?: string): Promise<string> {
+  let gist = "";
+  try {
+    const title: string = (await page.title()) || "(no title)";
+    const text: string = await page.evaluate(() => document.body?.innerText ?? "").catch(() => "");
+    const snippet = text.replace(/\s+/g, " ").trim().slice(0, 160);
+    gist = ` Page: ${title} (${page.url()})${snippet ? `: "${snippet}"` : ""}.`;
+  } catch {
+    // The page is gone; the halt message stands alone.
+  }
+  if (!logDir) return gist;
+  try {
+    mkdirSync(logDir, { recursive: true });
+    const base = join(logDir, `session-start-${stamp()}`);
+    await page.screenshot({ path: `${base}.png`, fullPage: true });
+    writeFileSync(`${base}.html`, await page.content());
+    return `${gist} Saved ${base}.png and .html.`;
+  } catch {
+    return gist;
+  }
 }
 
 function stamp(): string {
@@ -733,13 +761,13 @@ export async function openDepopSession(opts: DepopSessionOptions = {}): Promise<
       }
     }
     const signal = await detectHalt(home);
-    if (signal) throw new CliError("depop_halted", `Depop halted at session start: ${signal}.`, "Check the Depop window by hand. List these items by hand (Copy listing) until it's resolved.");
+    if (signal) throw new CliError("depop_halted", `Depop halted at session start: ${signal}.${await savePage(home, opts.logDir)}`, "Check the Depop window by hand. List these items by hand (Copy listing) until it's resolved.");
     const missing = await missingBaseControls(home);
     if (missing.length) {
       throw new CliError(
         "depop_halted",
-        `Depop preflight: couldn't find the ${missing.join(", ")} field${missing.length > 1 ? "s" : ""} on a blank sell form.`,
-        "Depop changed its form. Update DEPOP.selectors in src/depop-fill.ts; list by hand meanwhile."
+        `Depop preflight: couldn't find the ${missing.join(", ")} field${missing.length > 1 ? "s" : ""} on a blank sell form.${await savePage(home, opts.logDir)}`,
+        "Depop changed its form, or showed another page (sign-in, a block). Read the saved page, then update DEPOP.selectors in src/depop-fill.ts; list by hand meanwhile."
       );
     }
     await home.goto("about:blank").catch(() => undefined);

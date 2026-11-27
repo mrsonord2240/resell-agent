@@ -377,7 +377,7 @@ async function cmdPostBatch() {
         returnPolicyId: arg("--return"),
       },
     },
-    { openBrowserSession: () => openDepopSession() }
+    { openBrowserSession: () => openDepopSession({ logDir: join(dir, RESELL_DIR) }) }
   );
   const pending = outcome.index.items.filter(
     (row) => row.intake !== "drafted" || outcome.markets.some((m) => row.markets.find((r) => r.market === m)?.status !== "published")

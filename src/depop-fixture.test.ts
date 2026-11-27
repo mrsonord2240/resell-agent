@@ -381,7 +381,12 @@ try {
 
   // ---------- session-start preflight (E14 stage 1) and an expired sign-in mid-session ----------
   fake.state = "noprice";
-  await assert.rejects(openDepopSession(options(profile)), (e: unknown) => e instanceof CliError && e.code === "depop_halted" && /couldn't find the price field/.test(e.message));
+  // The halt names the page it saw and saves it (screenshot + HTML), so a changed or blocked Depop page can be read later.
+  const startLogDir = mkdtempSync(join(tmpdir(), "depop-start-log-"));
+  await assert.rejects(openDepopSession(options(profile, { logDir: startLogDir })), (e: unknown) =>
+    e instanceof CliError && e.code === "depop_halted" && /couldn't find the price field/.test(e.message) && /Page: .*\/products\/create\//.test(e.message) && /session-start-.*\.png/.test(e.message));
+  const saved = readdirSync(startLogDir);
+  assert.ok(saved.some((f) => /^session-start-.*\.png$/.test(f)) && saved.some((f) => /^session-start-.*\.html$/.test(f)), `screenshot and HTML saved (got ${saved.join(", ")})`);
   await until(async () => !profileInUse(profile), "Chrome closed after a preflight halt");
   // C1: no Post button means no click can be seen, so that halts at session start too.
   fake.state = "nopost";
