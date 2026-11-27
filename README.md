@@ -333,10 +333,12 @@ node dist/cli.js post-batch closet --markets depop --tabs 3
 
 Re-runs resume: an existing `draft.json` is never rebuilt or overwritten, and a
 published market is skipped. The eBay SKU comes from the photos' bytes and is
-saved in `draft.json`, so a retry, or a re-created draft, publishes under the same
-SKU. Two folders with identical photos would share it: the first proceeds and each
-later one is an error row ("same photos as <folder>; reshoot one photo or delete the
-copy"). Photos are re-read from the item folder at publish, so the batch folder can
+saved in `draft.json`, so a retry publishes under the same SKU. A re-created
+`draft.json` computes it again from the photos and the current `GUI_DEFAULT_SKU`
+prefix: the same SKU as long as that prefix is unchanged. Two folders with identical
+photos would share it: the one already holding a draft with results (else a draft,
+else the first by name) proceeds, and each other one is an error row ("same photos
+as <folder>; reshoot one photo or delete the copy"). Photos are re-read from the item folder at publish, so the batch folder can
 move between runs.
 
 A draft is **held** when its brand was inferred rather than read off a label, or

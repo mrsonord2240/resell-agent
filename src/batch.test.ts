@@ -291,6 +291,33 @@ await assert.rejects(runBatch({ dir: makeBatch({}) }, fakes().deps), isCode("usa
   assert.strictEqual(f.ebay.length, 2, "nothing re-published");
 }
 
+{
+  // The folder with the live record owns the photo set, whatever the names: a later copy that sorts first is the error row.
+  const dir = makeBatch({ boots: { "1.jpg": "boots" } });
+  const f = fakes();
+  await runBatch({ dir, markets: ["ebay", "depop"], ebay: ebayFlags }, f.deps);
+  assert.deepStrictEqual([f.ebay.length, f.fills.length], [1, 1]);
+  mkdirSync(join(dir, "a-boots"));
+  writeFileSync(join(dir, "a-boots", "1.jpg"), "boots");
+  const out = await runBatch({ dir, markets: ["ebay", "depop"], ebay: ebayFlags }, f.deps);
+  const row = (name: string) => out.items.find((i) => i.item === name)!;
+  assert.strictEqual(row("a-boots").intake, "error");
+  assert.strictEqual(row("a-boots").error, "same photos as boots; reshoot one photo or delete the copy");
+  assert.ok(!existsSync(join(dir, "a-boots", "draft.json")), "the copy is never drafted");
+  assert.deepStrictEqual([f.ebay.length, f.fills.length, f.drafted.length], [1, 1, 1], "no publish or fill for the copy");
+  const idx = buildBatchIndex(dir);
+  assert.deepStrictEqual(idx.items.map((i) => [i.item, i.intake]), [["a-boots", "error"], ["boots", "drafted"]]);
+  assert.deepStrictEqual(idx.items[1].markets.map((m) => [m.market, m.status]), [["ebay", "published"], ["depop", "published"]], "boots' state is still shown");
+}
+{
+  // Among drafted folders, one with a stored result beats one without; an undrafted copy never owns a drafted folder's set.
+  const dir = makeBatch({ b: { "1.jpg": "same" }, c: { "1.jpg": "same" } });
+  const id = photoSetId(itemPhotos(join(dir, "b")));
+  writeDraftFile(join(dir, "c", "draft.json"), { ...bundle(["ebay"]), draftId: id, photos: [], publishResults: [{ platform: "ebay", status: "unknown", message: "u" }] });
+  writeDraftFile(join(dir, "b", "draft.json"), { ...bundle(["ebay"]), draftId: id, photos: [], publishResults: [] });
+  assert.deepStrictEqual(buildBatchIndex(dir).items.map((i) => [i.item, i.intake]), [["b", "error"], ["c", "drafted"]]);
+}
+
 // --- Held (O5): no market publishes until `mark --approve`; then the next night publishes it ---
 {
   const dir = makeBatch({ bag: { "1.jpg": "logo-less bag" } });

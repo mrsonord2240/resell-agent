@@ -157,33 +157,43 @@ function unreadableMessage(e: unknown): string {
   return `draft.json is unreadable and is never overwritten; fix or delete it: ${e instanceof Error ? e.message : e}`;
 }
 
-/** The id an item publishes its eBay SKU under: its draft's id, or for an undrafted item the photo hash it will get (E8). */
-function itemDraftId(itemDir: string): string | null {
+/**
+ * The id an item publishes its eBay SKU under (its draft's id, or for an undrafted item the photo hash it
+ * will get, E8) and how strong its claim on that id is: 0 a draft with a stored result, 1 a draft, 2 none.
+ */
+function itemClaim(itemDir: string): { id: string; rank: number } | null {
   const photos = itemPhotos(itemDir);
   if (!photos.length) return null;
   const draft = join(itemDir, DRAFT_FILE);
-  if (!existsSync(draft)) return photoSetId(photos);
+  if (!existsSync(draft)) return { id: photoSetId(photos), rank: 2 };
   try {
-    return readDraftFile(draft).draftId;
+    const file = readDraftFile(draft);
+    return { id: file.draftId, rank: file.publishResults.some((r) => r.status !== "skipped") ? 0 : 1 };
   } catch {
     return null; // an unreadable draft is its own error row
   }
 }
 
 /**
- * Folders with byte-identical photos would share one draft id, so one eBay SKU: the second would find
- * the first's live offer and record it as its own. The first folder in name order keeps the id; each
- * later one maps to that first folder and is an intake error row.
+ * Folders with byte-identical photos would share one draft id, so one eBay SKU: a second would find the
+ * first's live offer and record it as its own. The owner is the folder whose record is real: a draft with
+ * a stored result, then a draft, then an undrafted folder; ties go to name order. Every other folder with
+ * that id maps to the owner and is an intake error row, so a later copy never hides a live item.
  */
 export function duplicateItems(itemDirs: string[]): Map<string, string> {
-  const owners = new Map<string, string>();
-  const dupes = new Map<string, string>();
+  const owners = new Map<string, { dir: string; rank: number }>();
+  const claims: [string, string][] = [];
   for (const dir of itemDirs) {
-    const id = itemDraftId(dir);
-    if (id === null) continue;
-    const owner = owners.get(id);
-    if (owner) dupes.set(dir, owner);
-    else owners.set(id, dir);
+    const claim = itemClaim(dir);
+    if (!claim) continue;
+    claims.push([dir, claim.id]);
+    const owner = owners.get(claim.id);
+    if (!owner || claim.rank < owner.rank) owners.set(claim.id, { dir, rank: claim.rank }); // itemDirs is in name order
+  }
+  const dupes = new Map<string, string>();
+  for (const [dir, id] of claims) {
+    const owner = owners.get(id)!.dir;
+    if (owner !== dir) dupes.set(dir, owner);
   }
   return dupes;
 }
