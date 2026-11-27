@@ -303,6 +303,61 @@ Useful GUI defaults are `GUI_DEFAULT_SKU` (an optional stable SKU prefix),
 `.env`. Do not expose the GUI remotely unless you
 understand the risk and deliberately opt in.
 
+### Batch: a folder of items
+
+Put one subfolder per item in a batch folder, its photos at the top level:
+
+```
+closet/
+  green-fleece/
+    1.jpg 2.jpg 3.jpg   the item's photos (.jpg .jpeg .png .webp, top level only)
+    draft.json          written by the first run, then resumed
+    .resell/            run.log (every state change) and error screenshots; never counted as photos
+  boots/ ...
+  batch.json            index of every item's per-market state, rebuilt each run
+```
+
+The night run drafts every item (eBay and Depop listings both) and publishes eBay
+unattended, then exits:
+
+```
+node dist/cli.js post-batch closet
+```
+
+Later, at the computer, the Depop run fills each item's sell form for you to post
+(see "Depop assisted fill"); `--tabs N` sets how many filled tabs are open at once (default 3):
+
+```
+node dist/cli.js post-batch closet --markets depop --tabs 3
+```
+
+Re-runs resume: an existing `draft.json` is never rebuilt or overwritten, and a
+published market is skipped. The eBay SKU comes from the photos' bytes and is
+saved in `draft.json`, so a retry, or a re-created draft, publishes under the same
+SKU. Two folders with identical photos would share it: the first proceeds and each
+later one is an error row ("same photos as <folder>; reshoot one photo or delete the
+copy"). Photos are re-read from the item folder at publish, so the batch folder can
+move between runs.
+
+A draft is **held** when its brand was inferred rather than read off a label, or
+its price rests on fewer than 3 comps. No market publishes a held draft until you
+check it and release it with `mark --approve`.
+
+`node dist/cli.js status --batch closet` shows every item and market in a table and
+flags `UNKNOWN`, `HELD` and unmapped Depop fields; add `--json` for the index itself.
+Resolve a flagged item by hand with `mark`:
+
+- `mark --draft closet/boots/draft.json --market depop --posted <url>`: you checked
+  Depop and it is live (the URL must be on depop.com); the market becomes `published`.
+- `mark --draft closet/boots/draft.json --market depop --not-posted`: it isn't; the
+  next Depop run fills it again.
+- `mark --draft closet/boots/draft.json --approve`: release a held draft.
+
+eBay is never marked by hand: a re-run retries it under the same SKU. Exit codes:
+`2` usage (no batch folder, no item subfolders, a bad flag), `3` incomplete (an item
+not drafted, held, unknown or errored, or a requested market not published; `--json`
+still carries the full outcome).
+
 ### Depop assisted fill
 
 Depop has no posting API, so the tool fills the sell form and you click Post:
@@ -431,8 +486,9 @@ logging goes to stderr. Call `node dist/cli.js <command> --json` directly (it lo
 desktop/
   main.mjs          Electron shell that opens the local GUI in a window
 src/
-  cli.ts            command line (human or --json): draft | outfit | status | post | index | gui | auth-url | auth-exchange | help
-  draft-file.ts     draft.json: stable id, photos, saved publish results, post lock
+  cli.ts            command line (human or --json): draft | outfit | status | post-batch | mark | post | index | gui | auth-url | auth-exchange | help
+  batch.ts          post-batch runner: intake, night eBay phase, Depop phase, batch.json index, run log
+  draft-file.ts     draft.json: stable id and SKU, photos, saved publish results, post lock, mark
   load-env.ts       loads ./.env for the CLI
   gui.ts            local dashboard: draft review + publish orchestration
   publish.ts        publish routing: eBay API + Depop session
@@ -450,6 +506,7 @@ src/
     price.ts        comps -> price (trimmed stats)
     listing.ts      attributes -> platform-tuned copy
     aspects.ts      attributes -> eBay item specifics
+    market-fields.ts  attributes -> Depop form fields (category, size, condition, ...), unmapped ones flagged
   ebay/
     auth.ts         app token (per-scope), user consent, refresh
     browse.ts       active comps + sold comps (dormant, EBAY_INSIGHTS)
@@ -460,6 +517,5 @@ src/
 ## Roadmap
 
 - Marketplace Insights for real sold comps
-- Batch mode: a folder of items in, many drafts out
 - Poshmark read-only comps via a scraper, for cross-platform pricing
 - Poshmark assisted fill on the same contract as Depop
