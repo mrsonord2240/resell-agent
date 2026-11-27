@@ -71,7 +71,8 @@ assert.deepStrictEqual(saved.publishResults.map((r) => r.status), ["published", 
 assert.strictEqual(saved.ebay?.merchantLocationKey, "loc", "eBay settings persist for retries");
 const sku = calls[0];
 
-// Retry with no flags: eBay skipped (settings came from the file), others retried.
+// Retry with no flags: eBay skipped (settings came from the file), Poshmark retried, Depop's
+// `unknown` skipped until Sam verifies it (verify-first), so the merged state stays incomplete.
 calls.length = 0;
 const second = await postDraft(
   { draftPath: path },
@@ -85,10 +86,10 @@ const second = await postDraft(
     },
   }
 );
-assert.strictEqual(second.complete, true);
-assert.deepStrictEqual(second.results.map((r) => r.status), ["skipped", "published", "published"]);
-assert.deepStrictEqual(readDraftFile(path).publishResults.map((r) => r.status), ["published", "published", "published"]);
-assert.deepStrictEqual(calls, ["poshmark", "depop"]);
+assert.strictEqual(second.complete, false);
+assert.deepStrictEqual(second.results.map((r) => r.status), ["skipped", "published", "skipped"]);
+assert.deepStrictEqual(readDraftFile(path).publishResults.map((r) => r.status), ["published", "published", "unknown"]);
+assert.deepStrictEqual(calls, ["poshmark"]);
 assert.ok(sku.startsWith("ebay:resale-gui-"), "stable per-draft SKU");
 
 // Lock: a second concurrent post is refused, and the lock is released afterwards.
@@ -118,7 +119,12 @@ assert.strictEqual(JSON.parse(bad.stdout).error.code, "usage");
 const status = run("status", "--draft", path);
 assert.strictEqual(status.status, 0);
 const statusData = JSON.parse(status.stdout).data;
-assert.deepStrictEqual(statusData.listings.map((l: any) => l.publish.status), ["published", "published", "published"]);
+assert.deepStrictEqual(statusData.listings.map((l: any) => l.publish.status), ["published", "published", "unknown"]);
+
+// `post` exits 3 from the merged state: the stored Depop `unknown` keeps it incomplete.
+const incomplete = run("post", "--draft", path, "--platforms", "depop");
+assert.strictEqual(incomplete.status, 3);
+assert.strictEqual(JSON.parse(incomplete.stdout).error.code, "publish_incomplete");
 assert.ok(!readFileSync(path, "utf8").includes("lock"));
 
 console.log("draft-file ok");

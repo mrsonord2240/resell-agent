@@ -27,7 +27,15 @@ export interface PublishRunOptions {
   previousResults?: PlatformPublishResult[];
 }
 
-export type PublishStatus = "published" | "error" | "unknown" | "skipped";
+/**
+ * Per-market state (spec "Assisted-fill contract"):
+ * - `filling`: written before a browser tab is filled; a re-run reads it as `unknown`.
+ * - `unknown`: Post may have been clicked; browser markets skip it until Sam verifies (D6).
+ * - `not_posted`: tab closed with no submit seen; re-filled next run.
+ * - `held`: an uncertain draft no market publishes until `resell mark --approve` (O5).
+ * - `skipped`: not attempted this run; never replaces a stored state.
+ */
+export type PublishStatus = "published" | "error" | "unknown" | "skipped" | "filling" | "not_posted" | "held";
 
 export interface PlatformPublishResult {
   platform: Platform;
@@ -38,15 +46,46 @@ export interface PlatformPublishResult {
   url?: string;
   /** eBay only: the environment the result came from, so a sandbox run never stands in for production. */
   env?: "sandbox" | "production";
+  /** Browser fills only: ties a result to the `filling` entry its fill wrote (E11). */
+  attemptId?: string;
 }
 
 export interface PublishRunResult {
   results: PlatformPublishResult[];
 }
 
+export type BrowserMarket = Exclude<Platform, "ebay">;
+
+/** What a filled tab ended as. `published` and `unknown` mean a submit was seen; `not_posted` means none. */
+export interface BrowserFillOutcome {
+  status: "published" | "unknown" | "not_posted";
+  message: string;
+  url?: string;
+}
+
+/** A long-lived browser the batch runner owns and passes in (E2). A throw records `error` (or `unknown` if the message suggests the request went out). */
+export interface BrowserSession {
+  fill(platform: BrowserMarket, listing: ListingDraft, photoPaths: string[]): Promise<BrowserFillOutcome>;
+}
+
+/** Brackets each session fill with durable writes, so the wait itself holds no lock (E7). */
+export interface FillRecorder {
+  /** Durably records `filling` and returns the attempt id. */
+  begin(platform: BrowserMarket): Promise<string>;
+  /** Records the fill's result and returns the result to report for this run. */
+  finish(platform: BrowserMarket, attemptId: string, result: PlatformPublishResult, opts: { submitSeen: boolean }): Promise<PlatformPublishResult>;
+}
+
 export interface PublishDeps {
   publishEbay?: typeof publishListing;
+  /** The legacy one-shot browser path, used only when no `browserSession` is passed. */
   publishBrowser?: typeof publishViaBrowser;
+  browserSession?: BrowserSession;
+  fillRecorder?: FillRecorder;
+}
+
+export function isBrowserMarket(platform: Platform): platform is BrowserMarket {
+  return platform !== "ebay";
 }
 
 function uniquePlatforms(platforms: Platform[]): Platform[] {
@@ -160,15 +199,68 @@ function unknownMessage(platform: Platform, message: string): string {
   return `${platform} publish status is unknown; the request may have reached the platform. Verify the listing before retrying. ${message}`;
 }
 
-/** Fold a run's results into the stored ones; a "skipped" retry never hides an earlier success. */
+/** Fold a run's results into the stored ones; a "skipped" result never replaces a stored state. */
 export function mergePublishResults(previous: PlatformPublishResult[], current: PlatformPublishResult[]): PlatformPublishResult[] {
   const byPlatform = new Map(previous.map((result) => [result.platform, result]));
   for (const result of current) {
-    const prior = byPlatform.get(result.platform);
-    if (result.status === "skipped" && prior?.status === "published") continue;
+    if (result.status === "skipped" && byPlatform.has(result.platform)) continue;
     byPlatform.set(result.platform, result);
   }
   return [...byPlatform.values()];
+}
+
+/** O9: done only when every requested market's stored state is `published`; `unknown`, `filling` and `held` are not. */
+export function isPublishComplete(stored: PlatformPublishResult[], platforms: Platform[]): boolean {
+  const byPlatform = new Map(stored.map((result) => [result.platform, result]));
+  return platforms.every((platform) => byPlatform.get(platform)?.status === "published");
+}
+
+/** Why a market is not attempted this run, or null to attempt it. */
+function skipReason(platform: Platform, prior: PlatformPublishResult | undefined, ebayEnv: "sandbox" | "production"): string | null {
+  if (!prior) return null;
+  if (prior.status === "held") {
+    return `${platform} is held for review; release the draft with \`resell mark --approve\` first.`;
+  }
+  // An eBay success counts only in the environment it happened in. One with
+  // no env predates this field and goes back to eBay, whose SKU lookup
+  // returns an existing live listing instead of making a second one.
+  if (prior.status === "published" && (isBrowserMarket(platform) || prior.env === ebayEnv)) {
+    return `${platform} was already published successfully; skipped retry.`;
+  }
+  // Verify-first for browser markets only (D6): eBay's SKU lookup makes its retry safe.
+  if (isBrowserMarket(platform) && (prior.status === "unknown" || prior.status === "filling")) {
+    return `${platform} may already be posted (${prior.status}); verify it, then mark it posted or not posted before re-running.`;
+  }
+  return null;
+}
+
+async function fillInSession(
+  session: BrowserSession,
+  recorder: FillRecorder | undefined,
+  platform: BrowserMarket,
+  listing: ListingDraft,
+  photoPaths: string[]
+): Promise<PlatformPublishResult> {
+  let attemptId: string | undefined;
+  try {
+    attemptId = await recorder?.begin(platform);
+  } catch (error) {
+    return { platform, status: "error", message: `${platform} was not filled: ${errorMessage(error)}` };
+  }
+  let result: PlatformPublishResult;
+  try {
+    const outcome = await session.fill(platform, listing, photoPaths);
+    // `published` means a captured URL; a submit without one is verify-first.
+    const status = outcome.status === "published" && !outcome.url ? "unknown" : outcome.status;
+    result = { platform, status, message: outcome.message, url: outcome.url };
+  } catch (error) {
+    const message = errorMessage(error);
+    const unknown = possiblyPublished(message);
+    result = { platform, status: unknown ? "unknown" : "error", message: unknown ? unknownMessage(platform, message) : message };
+  }
+  if (!recorder || attemptId === undefined) return result;
+  result.attemptId = attemptId;
+  return recorder.finish(platform, attemptId, result, { submitSeen: result.status === "published" || result.status === "unknown" });
 }
 
 export async function publishDraftBundle(
@@ -185,16 +277,9 @@ export async function publishDraftBundle(
 
   for (const platform of targets) {
     const prior = previous.get(platform);
-    // An eBay success counts only in the environment it happened in. One with
-    // no env predates this field and goes back to eBay, whose SKU lookup
-    // returns an existing live listing instead of making a second one.
-    const priorCounts = platform !== "ebay" || prior?.env === ebayEnv;
-    if (prior?.status === "published" && priorCounts) {
-      results.push({
-        ...prior,
-        status: "skipped",
-        message: `${platform} was already published successfully; skipped retry.`,
-      });
+    const skip = skipReason(platform, prior, ebayEnv);
+    if (skip) {
+      results.push({ ...prior!, status: "skipped", message: skip });
       continue;
     }
 
@@ -214,6 +299,15 @@ export async function publishDraftBundle(
         status: "error",
         message: `${platform} needs a positive price before publishing; set it manually or use Copy listing.`,
       });
+      continue;
+    }
+
+    if (isBrowserMarket(platform) && deps.browserSession) {
+      results.push(
+        opts.photoPaths.length
+          ? await fillInSession(deps.browserSession, deps.fillRecorder, platform, listing, opts.photoPaths)
+          : { platform, status: "error", message: `Browser publishing for ${platform} needs the uploaded photo files from the draft step.` }
+      );
       continue;
     }
 
