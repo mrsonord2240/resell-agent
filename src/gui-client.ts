@@ -558,6 +558,8 @@ export function buildGuiScript(boot: GuiBootState): string {
     "  var text = 'Delete the draft \"' + (row ? row.title : 'this draft') + '\"? Its photos, edits and publish results are removed from this computer.';",
     "  var live = row && Array.isArray(row.markets) ? row.markets.filter(function (m) { return m.state === 'published'; }) : [];",
     "  live.forEach(function (m) { var name = PLATFORM_LABELS[m.platform] || m.platform; text += '\\n\\nThis draft has a live ' + name + ' listing. Deleting the draft does not end the ' + name + ' listing; end it on ' + name + ' if you want it gone.'; });",
+    "  var unconfirmed = row && Array.isArray(row.markets) ? row.markets.filter(function (m) { return m.state === 'unknown' || m.state === 'filling'; }) : [];",
+    "  unconfirmed.forEach(function (m) { var name = PLATFORM_LABELS[m.platform] || m.platform; text += '\\n\\nThis draft has a ' + name + ' listing you haven\\'t confirmed; deleting it loses that record.'; });",
     "  return text;",
     "}",
     "async function deleteDraft(draftId) {",

@@ -3,9 +3,9 @@
 // upload them), the last eBay settings, and every platform's publish result.
 // Same retry contract as the GUI: a platform already published is skipped.
 
-import { closeSync, openSync, readFileSync, renameSync, statSync, unlinkSync, writeFileSync } from "node:fs";
+import { closeSync, openSync, readdirSync, readFileSync, renameSync, statSync, unlinkSync, writeFileSync } from "node:fs";
 import { randomUUID } from "node:crypto";
-import { resolve } from "node:path";
+import { dirname, resolve } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import {
   isBrowserMarket,
@@ -26,6 +26,10 @@ import type { DraftBundle, Platform } from "./types.js";
 
 export interface DraftFile extends DraftBundle {
   draftId: string;
+  /** The eBay SKU computed when the draft was made, so a later GUI_DEFAULT_SKU change never moves it. Absent on old drafts. */
+  ebaySku?: string;
+  /** Batch drafts: the photos are the top-level images of the draft's own folder (E10), re-read at every publish. */
+  itemFolder?: boolean;
   photos: string[];
   ebay?: EbayPublishSettings;
   publishResults: PlatformPublishResult[];
@@ -43,8 +47,20 @@ export class CliError extends Error {
   }
 }
 
-export function newDraftFile(bundle: DraftBundle, photos: string[]): DraftFile {
-  return { ...bundle, draftId: randomUUID(), photos: photos.map((p) => resolve(p)), publishResults: [] };
+export const PHOTO_EXTENSIONS: ReadonlySet<string> = new Set([".jpg", ".jpeg", ".png", ".webp"]);
+
+/** E10: an item's photos are the image files at the top level of its folder, sorted by name. `.resell/` never counts. */
+export function itemPhotos(itemDir: string): string[] {
+  return readdirSync(itemDir, { withFileTypes: true })
+    .filter((e) => e.isFile() && PHOTO_EXTENSIONS.has(e.name.slice(e.name.lastIndexOf(".")).toLowerCase()))
+    .map((e) => e.name)
+    .sort()
+    .map((name) => resolve(itemDir, name));
+}
+
+/** A new draft, its eBay SKU fixed now from its id and the current GUI_DEFAULT_SKU prefix. */
+export function newDraftFile(bundle: DraftBundle, photos: string[], draftId: string = randomUUID()): DraftFile {
+  return { ...bundle, draftId, ebaySku: stableGuiSku(draftId, process.env.GUI_DEFAULT_SKU ?? ""), photos: photos.map((p) => resolve(p)), publishResults: [] };
 }
 
 export function readDraftFile(path: string): DraftFile {
@@ -350,20 +366,25 @@ export interface PostOutcome {
   complete: boolean;
 }
 
-/** The eBay SKU this draft publishes under: an explicit `ebay.sku`, else the stable id (same rule as `runPublish`). */
+/**
+ * The eBay SKU this draft publishes under (same rule as `runPublish`): an explicit `ebay.sku`, else the SKU
+ * stored when the draft was made, else (old drafts) derived from the stable id and the current prefix.
+ */
 export function draftSku(file: DraftFile, prefix = process.env.GUI_DEFAULT_SKU ?? ""): string {
-  return file.ebay?.sku?.trim() || stableGuiSku(file.draftId, prefix);
+  return file.ebay?.sku?.trim() || file.ebaySku || stableGuiSku(file.draftId, prefix);
 }
 
 function runPublish(file: DraftFile, platforms: Platform[], ebay: EbayPublishSettings | undefined, deps: PublishDeps) {
+  // The stored SKU stands in for an explicit one; only an old draft without it derives one from its id.
+  const settings = ebay && !ebay.sku?.trim() && file.ebaySku ? { ...ebay, sku: file.ebaySku } : ebay;
   return publishDraftBundle(
     {
       draft: file,
       photoPaths: file.photos,
       platforms,
-      ebay,
-      // An explicit --sku is the stable id; otherwise derive one from the draft.
-      draftId: ebay?.sku ? undefined : file.draftId,
+      ebay: settings,
+      // An explicit --sku (or the stored one) is the stable id; otherwise derive one from the draft.
+      draftId: settings?.sku?.trim() ? undefined : file.draftId,
       guiSkuPrefix: process.env.GUI_DEFAULT_SKU ?? "",
       previousResults: file.publishResults,
     },
@@ -381,6 +402,8 @@ export async function postDraft(args: PostArgs, deps: PublishDeps = {}): Promise
   const session = deps.browserSession;
   const locked = await withDraftLock(args.draftPath, async () => {
     const file = readDraftFile(args.draftPath);
+    // A batch draft's photos are wherever its folder is now, so a moved or renamed batch still uploads them.
+    if (file.itemFolder) file.photos = itemPhotos(dirname(resolve(args.draftPath)));
     const platforms = args.platforms ?? [...new Set(file.listings.map((l) => l.platform))];
     const ebay = platforms.includes("ebay") ? resolveEbaySettings(args.ebay, file.ebay) : undefined;
     if (ebay) file.ebay = ebay;

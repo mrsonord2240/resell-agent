@@ -361,6 +361,24 @@ try {
   await until(async () => !profileInUse(profile), "Chrome closed at session end");
   assert.strictEqual(await fetch(`http://127.0.0.1:${port1}/json/version`).then(() => true, () => false), false, "the debug port is gone");
 
+  // ---------- the sign-in tab closed while Chrome stays up (macOS keeps it running): the wait ends ----------
+  fake.loggedOut = true;
+  const signingIn = openDepopSession(options(profile)).then(
+    (session) => (sessions.push(session), "opened"),
+    (e: unknown) => e
+  );
+  const samIn = await until(async () => samConnect(Number(readFileSync(join(profile, "DevToolsActivePort"), "utf8").split("\n")[0])), "the sign-in Chrome");
+  const loginTab = await until(async () => pagesOf(samIn).find((p) => p.url().includes("/login/")), "the sign-in page");
+  await samIn.contexts()[0].newPage(); // another tab keeps the window, so Chrome never disconnects
+  await loginTab.close();
+  const signInEnd = await Promise.race([signingIn, sleep(10_000).then(() => "still waiting")]);
+  assert.ok(
+    signInEnd instanceof CliError && signInEnd.code === "depop_halted" && /sign-in window closed/.test(signInEnd.message),
+    `the session halts once the sign-in tab is gone (got ${signInEnd instanceof Error ? signInEnd.message : String(signInEnd)})`
+  );
+  await until(async () => !profileInUse(profile), "Chrome closed after the sign-in tab closed");
+  fake.loggedOut = false;
+
   // ---------- session-start preflight (E14 stage 1) and an expired sign-in mid-session ----------
   fake.state = "noprice";
   await assert.rejects(openDepopSession(options(profile)), (e: unknown) => e instanceof CliError && e.code === "depop_halted" && /couldn't find the price field/.test(e.message));

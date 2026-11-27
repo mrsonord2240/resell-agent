@@ -16,7 +16,9 @@ import { offerStock } from "./ebay/sell.js";
 import {
   CliError,
   draftSku,
+  itemPhotos,
   newDraftFile,
+  PHOTO_EXTENSIONS,
   postDraft,
   readDraftFile,
   renameReplacing,
@@ -39,7 +41,7 @@ import type { DraftBundle, Platform } from "./types.js";
 
 /** C7: intake drafts every enabled market, whatever `--markets` publishes. Poshmark is deferred (D1). */
 export const BATCH_MARKETS: Platform[] = ["ebay", "depop"];
-export const PHOTO_EXTENSIONS: ReadonlySet<string> = new Set([".jpg", ".jpeg", ".png", ".webp"]);
+export { itemPhotos, PHOTO_EXTENSIONS };
 export const DRAFT_FILE = "draft.json";
 export const RESELL_DIR = ".resell";
 export const BATCH_INDEX_FILE = "batch.json";
@@ -48,15 +50,6 @@ export const DEFAULT_TABS = 3;
 const MIN_PRICING_COMPS = 3;
 
 // ---------- photos, SKU id, hold rule ----------
-
-/** E10: an item's photos are the image files at the top level of its folder, sorted by name. `.resell/` never counts. */
-export function itemPhotos(itemDir: string): string[] {
-  return readdirSync(itemDir, { withFileTypes: true })
-    .filter((e) => e.isFile() && PHOTO_EXTENSIONS.has(e.name.slice(e.name.lastIndexOf(".")).toLowerCase()))
-    .map((e) => e.name)
-    .sort()
-    .map((name) => resolve(itemDir, name));
-}
 
 /** E8: a stable id from the photos' bytes in name order. It becomes the draft id, so the eBay SKU survives a re-created draft.json. */
 export function photoSetId(photoPaths: string[]): string {
@@ -164,6 +157,41 @@ function unreadableMessage(e: unknown): string {
   return `draft.json is unreadable and is never overwritten; fix or delete it: ${e instanceof Error ? e.message : e}`;
 }
 
+/** The id an item publishes its eBay SKU under: its draft's id, or for an undrafted item the photo hash it will get (E8). */
+function itemDraftId(itemDir: string): string | null {
+  const photos = itemPhotos(itemDir);
+  if (!photos.length) return null;
+  const draft = join(itemDir, DRAFT_FILE);
+  if (!existsSync(draft)) return photoSetId(photos);
+  try {
+    return readDraftFile(draft).draftId;
+  } catch {
+    return null; // an unreadable draft is its own error row
+  }
+}
+
+/**
+ * Folders with byte-identical photos would share one draft id, so one eBay SKU: the second would find
+ * the first's live offer and record it as its own. The first folder in name order keeps the id; each
+ * later one maps to that first folder and is an intake error row.
+ */
+export function duplicateItems(itemDirs: string[]): Map<string, string> {
+  const owners = new Map<string, string>();
+  const dupes = new Map<string, string>();
+  for (const dir of itemDirs) {
+    const id = itemDraftId(dir);
+    if (id === null) continue;
+    const owner = owners.get(id);
+    if (owner) dupes.set(dir, owner);
+    else owners.set(id, dir);
+  }
+  return dupes;
+}
+
+function duplicateMessage(owner: string): string {
+  return `same photos as ${basename(owner)}; reshoot one photo or delete the copy`;
+}
+
 function marketRows(file: DraftFile): BatchMarketRow[] {
   const stored = new Map(file.publishResults.map((r) => [r.platform, r]));
   const markets = [...new Set([...file.listings.map((l) => l.platform), ...stored.keys()])];
@@ -180,9 +208,10 @@ function marketRows(file: DraftFile): BatchMarketRow[] {
   });
 }
 
-function itemRow(itemDir: string): BatchItemRow {
+function itemRow(itemDir: string, duplicateOf?: string): BatchItemRow {
   const row: BatchItemRow = { item: basename(itemDir), dir: itemDir, draft: null, sku: null, intake: "pending", error: null, markets: [] };
   if (!itemPhotos(itemDir).length) return { ...row, intake: "error", error: noPhotosMessage(itemDir) };
+  if (duplicateOf) return { ...row, intake: "error", error: duplicateMessage(duplicateOf) };
   const draft = join(itemDir, DRAFT_FILE);
   if (!existsSync(draft)) return row;
   try {
@@ -196,7 +225,9 @@ function itemRow(itemDir: string): BatchItemRow {
 
 /** The index, rebuilt from the drafts on disk. Read-only. */
 export function buildBatchIndex(dir: string, now: Date = new Date()): BatchIndex {
-  return { version: 1, dir: resolve(dir), updated: now.toISOString(), items: listItemDirs(dir).map(itemRow) };
+  const dirs = listItemDirs(dir);
+  const dupes = duplicateItems(dirs);
+  return { version: 1, dir: resolve(dir), updated: now.toISOString(), items: dirs.map((d) => itemRow(d, dupes.get(d))) };
 }
 
 /** Rebuilds the index and writes it to `<dir>/batch.json`. */
@@ -275,7 +306,7 @@ function errorText(e: unknown): string {
 }
 
 /** O2: create draft.json only when absent; otherwise resume it. An unreadable one is an error row and is never written. */
-async function intakeItem(itemDir: string, deps: BatchDeps): Promise<BatchItemOutcome> {
+async function intakeItem(itemDir: string, deps: BatchDeps, duplicateOf?: string): Promise<BatchItemOutcome> {
   const now = deps.now ?? (() => new Date());
   const draft = join(itemDir, DRAFT_FILE);
   const out: BatchItemOutcome = { item: basename(itemDir), dir: itemDir, draft, intake: "error", error: null, results: [] };
@@ -294,6 +325,7 @@ async function intakeItem(itemDir: string, deps: BatchDeps): Promise<BatchItemOu
 
   const photos = itemPhotos(itemDir);
   if (!photos.length) return fail(noPhotosMessage(itemDir));
+  if (duplicateOf) return fail(duplicateMessage(duplicateOf)); // never drafted, never published
   if (existsSync(draft)) return resume();
 
   let bundle: DraftBundle;
@@ -305,8 +337,8 @@ async function intakeItem(itemDir: string, deps: BatchDeps): Promise<BatchItemOu
   try {
     return await withDraftLock(draft, async () => {
       if (existsSync(draft)) return resume(); // another run created it while this one drafted
-      const file = newDraftFile(bundle, photos);
-      file.draftId = photoSetId(photos);
+      const file = newDraftFile(bundle, photos, photoSetId(photos));
+      file.itemFolder = true; // publish re-reads the photos from this folder, so the batch can move between runs
       const hold = holdReason(bundle);
       if (hold) file.publishResults = BATCH_MARKETS.map((platform) => ({ platform, status: "held" as const, message: hold }));
       writeDraftFile(draft, file);
@@ -464,8 +496,9 @@ export async function runBatch(args: BatchArgs, deps: BatchDeps = {}): Promise<B
   }
   const dirs = listItemDirs(args.dir);
 
+  const dupes = duplicateItems(dirs);
   const items: BatchItemOutcome[] = [];
-  for (const dir of dirs) items.push(await intakeItem(dir, deps));
+  for (const dir of dirs) items.push(await intakeItem(dir, deps, dupes.get(dir)));
   const ready = items.filter((i) => i.intake !== "error");
 
   if (markets.includes("ebay")) {

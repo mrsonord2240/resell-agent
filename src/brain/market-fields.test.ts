@@ -46,6 +46,13 @@ for (const complete of [async () => "sorry, I can't", async () => { throw new Er
   assert.strictEqual(f.color.mapped, false);
 }
 
+// an off-list condition (a model or an old draft outside DEPOP_CONDITION) is unmapped, never auto-picked
+{
+  const f = await mapDepopFields({ ...attrs, condition: "excellent" as ItemAttributes["condition"] }, reply({ category: cat, size: "US 8", shipping: "medium" }));
+  assert.deepStrictEqual(f.condition, { value: null, mapped: false });
+  assert.deepStrictEqual(unmappedFields({ platform: "depop", title: "t", description: "d", price: 1, condition: "good", marketFields: { depop: f } }), ["condition"]);
+}
+
 // old drafts and unmapped lists
 const old: ListingDraft = { platform: "depop", title: "t", description: "d", price: 1, condition: "good" };
 assert.deepStrictEqual(unmappedFields(old), ["category", "size", "brand", "condition", "color", "shipping"]);

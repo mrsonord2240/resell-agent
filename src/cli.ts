@@ -7,6 +7,7 @@ import { renderSheet } from "./sheet.js";
 import { buildConsentUrl, exchangeCode } from "./ebay/auth.js";
 import { startGui } from "./gui.js";
 import { appendRunLog, buildBatchIndex, DEFAULT_TABS, prefillStock, RESELL_DIR, runBatch, writeBatchIndex, type BatchIndex, type PrefillStock } from "./batch.js";
+import { expectedHost, isExpectedPlatformUrl } from "./browser-automation.js";
 import { lazyDepopSession, openDepopSession } from "./depop-fill.js";
 import {
   CliError,
@@ -415,14 +416,9 @@ function markAction(): MarkAction {
   const m = market[0];
   if (!isBrowserMarket(m)) usage("eBay is not marked by hand: a re-run retries it under the same SKU and finds an existing listing");
   if (has("--not-posted")) return { kind: "not_posted", market: m };
-  let url: URL | undefined;
-  try {
-    url = posted ? new URL(posted) : undefined;
-  } catch {
-    /* reported below */
-  }
-  if (!url || url.protocol !== "https:") usage("--posted needs the listing's https:// URL");
-  return { kind: "posted", market: m, url: url.toString() };
+  // The GUI's rule: an https URL on the market's own host.
+  if (!posted || !isExpectedPlatformUrl(m, posted)) usage(`--posted needs the listing's https:// URL on ${expectedHost(m)}`);
+  return { kind: "posted", market: m, url: new URL(posted).toString() };
 }
 
 async function cmdMark() {

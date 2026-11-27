@@ -2,7 +2,7 @@
 // Model and eBay calls are injected fakes; the Depop phase runs on a fake BrowserSession.
 // Run: npm test
 import assert from "node:assert";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { spawnSync } from "node:child_process";
@@ -265,6 +265,32 @@ await assert.rejects(runBatch({ dir: makeBatch({}) }, fakes().deps), isCode("usa
   assert.deepStrictEqual(idx.items.map((i) => [i.item, i.intake]), [["bad", "error"], ["empty", "error"], ["good", "drafted"]]);
 }
 
+// --- Two folders with byte-identical photos share a SKU: the first proceeds, every later one is an error row ---
+{
+  const dir = makeBatch({ coat: { "1.jpg": "front", "2.jpg": "back" }, "coat copy": { "1.jpg": "front", "2.jpg": "back" }, hat: { "1.jpg": "hat" } });
+  const f = fakes();
+  const out = await runBatch({ dir, ebay: ebayFlags }, f.deps);
+  const row = (name: string) => out.items.find((i) => i.item === name)!;
+  assert.strictEqual(row("coat").intake, "created");
+  assert.strictEqual(row("coat copy").intake, "error");
+  assert.strictEqual(row("coat copy").error, "same photos as coat; reshoot one photo or delete the copy");
+  assert.strictEqual(f.ebay.length, 2, "one publish for the coat (and one for the hat), none for the copy");
+  assert.strictEqual(f.drafted.length, 2, "the copy is never drafted");
+  assert.ok(!existsSync(join(dir, "coat copy", "draft.json")));
+  assert.strictEqual(out.complete, false, "the copy's error row makes the batch incomplete");
+  const idx = buildBatchIndex(dir);
+  assert.deepStrictEqual(idx.items.map((i) => [i.item, i.intake, i.error]), [
+    ["coat", "drafted", null],
+    ["coat copy", "error", "same photos as coat; reshoot one photo or delete the copy"],
+    ["hat", "drafted", null],
+  ]);
+  // A copy that already has its own draft.json (from before this rule) is an error row too, and is never published.
+  writeFileSync(join(dir, "coat copy", "draft.json"), readFileSync(join(dir, "coat", "draft.json")));
+  const again = await runBatch({ dir, ebay: ebayFlags }, f.deps);
+  assert.strictEqual(again.items.find((i) => i.item === "coat copy")!.intake, "error");
+  assert.strictEqual(f.ebay.length, 2, "nothing re-published");
+}
+
 // --- Held (O5): no market publishes until `mark --approve`; then the next night publishes it ---
 {
   const dir = makeBatch({ bag: { "1.jpg": "logo-less bag" } });
@@ -324,6 +350,44 @@ await assert.rejects(runBatch({ dir: makeBatch({}) }, fakes().deps), isCode("usa
   await runBatch({ dir, ebay: ebayFlags }, rebuilt.deps);
   assert.strictEqual(rebuilt.drafted.length, 1);
   assert.strictEqual(rebuilt.ebay[0].sku, broken.ebay[0].sku);
+}
+{
+  // (4) The SKU is stored at intake: a changed GUI_DEFAULT_SKU before an `unknown` retry still publishes under the first SKU.
+  const saved = process.env.GUI_DEFAULT_SKU;
+  try {
+    const dir = makeBatch({ scarf: { "1.jpg": "scarf" } });
+    const draft = join(dir, "scarf", "draft.json");
+    process.env.GUI_DEFAULT_SKU = "NIGHT";
+    const broken = fakes({ ebayThrows: "socket hang up" });
+    await runBatch({ dir, ebay: ebayFlags }, broken.deps);
+    assert.strictEqual(status(draft, "ebay"), "unknown");
+    assert.match(broken.ebay[0].sku, /^NIGHT-/);
+    process.env.GUI_DEFAULT_SKU = "DAY";
+    const ok = fakes();
+    await runBatch({ dir, ebay: ebayFlags }, ok.deps);
+    assert.strictEqual(ok.ebay[0].sku, broken.ebay[0].sku, "the retry publishes under the stored SKU, not a new prefix");
+    assert.strictEqual(draftSku(readDraftFile(draft)), broken.ebay[0].sku, "status reports the stored SKU");
+  } finally {
+    if (saved === undefined) delete process.env.GUI_DEFAULT_SKU;
+    else process.env.GUI_DEFAULT_SKU = saved;
+  }
+}
+
+// --- The batch folder moved between runs: photos are re-read from the draft's own folder at publish (E10) ---
+{
+  const dir = makeBatch({ coat: { "1.jpg": "front", "2.jpg": "back" } });
+  const broken = fakes({ ebayThrows: "eBay is down" });
+  await runBatch({ dir, ebay: ebayFlags }, broken.deps);
+  const moved = `${dir}-moved`;
+  renameSync(dir, moved);
+  const ok = fakes();
+  const out = await runBatch({ dir: moved, markets: ["ebay", "depop"], ebay: ebayFlags }, ok.deps);
+  assert.strictEqual(out.complete, true);
+  assert.strictEqual(ok.drafted.length, 0, "resumed, not re-drafted");
+  const uploaded = [...ok.ebay[0].photos, ...ok.fills[0].photos];
+  assert.strictEqual(uploaded.length, 4);
+  assert.ok(uploaded.every((p) => p.startsWith(join(moved, "coat")) && existsSync(p)), "eBay and Depop get the photos where they are now");
+  assert.ok(readDraftFile(join(moved, "coat", "draft.json")).photos.every((p) => existsSync(p)), "draft.json follows the move");
 }
 
 // --- A draft locked by another writer is an item error for this run; the batch continues ---
@@ -426,6 +490,8 @@ await assert.rejects(runBatch({ dir: makeBatch({}) }, fakes().deps), isCode("usa
     ["mark", "--draft", draft, "--posted", url],
     ["mark", "--draft", draft, "--market", "ebay", "--not-posted"],
     ["mark", "--draft", draft, "--market", "depop", "--posted", "not-a-url"],
+    ["mark", "--draft", draft, "--market", "depop", "--posted", "https://evil.example/products/bag"], // off the market's host, as the GUI refuses
+    ["mark", "--draft", draft, "--market", "depop", "--posted", "http://www.depop.com/products/bag"],
     ["mark", "--draft", draft, "--approve", "--not-posted", "--market", "depop"],
   ]) {
     const r = run(...bad);

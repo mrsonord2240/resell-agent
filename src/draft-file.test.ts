@@ -98,6 +98,31 @@ assert.deepStrictEqual(savedStatus(readDraftFile(path)), ["published", "error", 
 assert.deepStrictEqual(calls, []);
 assert.ok(sku.startsWith("ebay:resale-gui-"), "stable per-draft SKU");
 
+// The eBay SKU is written into draft.json when the draft is made; a later GUI_DEFAULT_SKU change does not move it.
+// A draft file without it (written before) keeps deriving it from the id and the current prefix.
+{
+  const saved = process.env.GUI_DEFAULT_SKU;
+  try {
+    const p = join(dir, "sku-draft.json");
+    process.env.GUI_DEFAULT_SKU = "FIRST";
+    const made = newDraftFile(bundle, [join(dir, "a.jpg")]);
+    assert.match(made.ebaySku ?? "", /^FIRST-/);
+    writeDraftFile(p, made);
+    process.env.GUI_DEFAULT_SKU = "SECOND";
+    const skus: string[] = [];
+    await postDraft({ draftPath: p, platforms: ["ebay"], ebay: ebayFlags }, { publishEbay: async (_l, o) => (skus.push(o.sku), { offerId: "o", listingId: "l" }) as any });
+    assert.deepStrictEqual(skus, [made.ebaySku]);
+    const old = join(dir, "sku-old.json");
+    const { ebaySku: _drop, ...legacyFile } = made;
+    writeDraftFile(old, legacyFile);
+    await postDraft({ draftPath: old, platforms: ["ebay"], ebay: ebayFlags }, { publishEbay: async (_l, o) => (skus.push(o.sku), { offerId: "o", listingId: "l" }) as any });
+    assert.match(skus[1], /^SECOND-/, "an old draft file keeps today's derivation");
+  } finally {
+    if (saved === undefined) delete process.env.GUI_DEFAULT_SKU;
+    else process.env.GUI_DEFAULT_SKU = saved;
+  }
+}
+
 // Lock: a second concurrent post is refused, and the lock is released afterwards.
 await withDraftLock(path, async () => {
   await assert.rejects(postDraft({ draftPath: path }), (e: unknown) => e instanceof CliError && e.code === "draft_locked");

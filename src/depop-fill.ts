@@ -721,6 +721,8 @@ export async function openDepopSession(opts: DepopSessionOptions = {}): Promise<
       let since = now();
       while (!isSellForm(site, home.url())) {
         if (disconnected) throw new CliError("depop_halted", "The Depop Chrome window closed before sign-in.", "Re-run and sign in.");
+        // macOS keeps Chrome running when its window closes, so `disconnected` never fires: the tab's own close ends the wait.
+        if (home.isClosed()) throw new CliError("depop_halted", "The Depop sign-in window closed before sign-in.", "Re-run and sign in.");
         await new Promise((r) => setTimeout(r, 500));
         const url = home.url();
         if (url !== seen) [seen, since] = [url, now()];

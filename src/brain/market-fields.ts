@@ -89,7 +89,7 @@ export async function mapDepopFields(attrs: ItemAttributes, completeFn: Complete
     category: fromReply(r.category, DEPOP_CATEGORIES),
     size: attrs.size?.trim() ? fromReply(r.size) : unmapped(),
     brand: fromAttr(attrs.brand),
-    condition: { value: DEPOP_CONDITION[attrs.condition], mapped: true },
+    condition: fromAttr(DEPOP_CONDITION[attrs.condition]), // off-list: unmapped, left for Sam
     color: fromAttr(attrs.color),
     shipping: fromReply(r.shipping, DEPOP_SHIPPING_SIZES),
   };
