@@ -278,6 +278,38 @@ try {
   const rMiss = await pMiss;
   assert.strictEqual(rMiss.status, "unknown");
   assert.match(rMiss.message, /Post was clicked/);
+
+  // Round 2 (1): Sam clicks Post the instant the fill banner appears. The click must already be watched.
+  const known = new Set(pagesOf(sam));
+  const pFast = s.forItem({ label: "Fast click" }).fill("depop", trainers("Fast click"), photos);
+  const tFast = await until(async () => pagesOf(sam).find((p) => !known.has(p) && p.url().includes("/products/create/")), "the new tab", 15_000);
+  await tFast.evaluate(() => {
+    // In-page, so no round trip can delay it: click Post in the same task that adds the banner.
+    new MutationObserver((_, obs) => {
+      if (document.getElementById("resell-banner-fill")) {
+        obs.disconnect();
+        document.getElementById("post")!.click();
+      }
+    }).observe(document.documentElement, { childList: true, subtree: true });
+  });
+  const beforeFast = fake.creates;
+  await until(async () => fake.creates > beforeFast, "the instant click's create reached the server");
+  await sleep(200);
+  await tFast.close();
+  const rFast = await pFast;
+  assert.strictEqual(rFast.status, "unknown", "a Post click the moment the banner appears is seen");
+
+  // Round 2 (3): the sell form is reloaded, then Sam clicks Post: still seen.
+  const pReload = s.forItem({ label: "Reloaded" }).fill("depop", trainers("Reloaded"), photos);
+  const tReload = await filledTab(sam, "Reloaded");
+  await tReload.reload({ waitUntil: "domcontentloaded" });
+  const beforeReload = fake.creates;
+  await tReload.click("#post");
+  await until(async () => fake.creates > beforeReload, "the create after the reload reached the server");
+  await sleep(200);
+  await tReload.close();
+  const rReload = await pReload;
+  assert.strictEqual(rReload.status, "unknown", "a Post click after a reload is seen");
   fake.stay = false;
   fake.createPath = "";
 
@@ -337,6 +369,16 @@ try {
   fake.state = "nopost";
   await assert.rejects(openDepopSession(options(profile)), (e: unknown) => e instanceof CliError && e.code === "depop_halted" && /couldn't find the submit field/.test(e.message));
   await until(async () => !profileInUse(profile), "Chrome closed after a preflight halt");
+  // Round 2 (2): the header's search button is a form submit button, but not Post. When the real Post
+  // matches neither selector, the preflight must halt, not pass on the search button.
+  fake.state = "oddpost";
+  await assert.rejects(openDepopSession(options(profile)), (e: unknown) => e instanceof CliError && e.code === "depop_halted" && /couldn't find the submit field/.test(e.message));
+  await until(async () => !profileInUse(profile), "Chrome closed after a preflight halt");
+  // The fallback still finds Post when it is the sell form's own submit button.
+  fake.state = "submitpost";
+  const sFallback = await openDepopSession(options(profile));
+  await sFallback.close();
+  await until(async () => !profileInUse(profile), "Chrome closed");
   fake.state = "";
   const s2 = await openDepopSession(options(profile));
   sessions.push(s2);

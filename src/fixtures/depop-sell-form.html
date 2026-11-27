@@ -8,7 +8,8 @@
 
   Category paths: Menswear > Footwear > Trainers (US sizes), Womenswear > Tops > T-shirts (letter
   sizes), Everything else > Home > Decor (no size control). Flags (set by the test server via
-  window.FIXTURE): state=captcha | restricted | policy | noprice | nopost; stay (no navigation after
+  window.FIXTURE): state=captcha | restricted | policy | noprice | nopost | oddpost (Post has no testid
+  and isn't a submit button) | submitpost (Post has no testid but is the sell form's submit button); stay (no navigation after
   Post); createPath (a create call the runner doesn't recognise, e.g. "/graphql").
 -->
 <html lang="en">
@@ -25,6 +26,9 @@
 </style>
 </head>
 <body>
+<header>
+  <form id="search" role="search" onsubmit="return false"><input name="q" aria-label="Search"><button type="submit">Search</button></form>
+</header>
 <h1>Sell an item</h1>
 <p class="help">Listings that violate our policies may be removed. Read the seller guidelines before you post.</p>
 <div id="notices"></div>
@@ -65,6 +69,8 @@
   const BRANDS = ["Nike", "Patagonia", "Levi's", "Carhartt"];
 
   if (FIX.state === "nopost") document.getElementById("post").remove();
+  if (FIX.state === "oddpost" || FIX.state === "submitpost") document.getElementById("post").removeAttribute("data-testid");
+  if (FIX.state === "submitpost") document.getElementById("post").setAttribute("type", "submit");
   if (FIX.state === "noprice") { document.getElementById("price").remove(); document.getElementById("price-label").remove(); }
   if (FIX.state === "captcha") document.body.insertAdjacentHTML("afterbegin", '<iframe title="security challenge" src="about:blank#captcha"></iframe>');
   if (FIX.state === "restricted") document.getElementById("notices").innerHTML = '<div role="alert">Your account has been restricted. You can\'t list new items right now.</div>';

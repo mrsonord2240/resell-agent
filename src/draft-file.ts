@@ -69,7 +69,23 @@ export function readDraftFile(path: string): DraftFile {
 export function writeDraftFile(path: string, draft: DraftFile): void {
   const tmp = `${path}.tmp`;
   writeFileSync(tmp, JSON.stringify(draft, null, 2));
-  renameSync(tmp, path);
+  renameReplacing(tmp, path);
+}
+
+/**
+ * tmp -> final rename. On Windows the rename fails with EPERM/EBUSY/EACCES while another process (a virus
+ * scanner, an indexer, a reader) briefly holds the destination, so it retries for up to about a second.
+ */
+export function renameReplacing(from: string, to: string): void {
+  for (let attempt = 0; ; attempt++) {
+    try {
+      renameSync(from, to);
+      return;
+    } catch (e: any) {
+      if (attempt >= 20 || !["EPERM", "EBUSY", "EACCES"].includes(e?.code)) throw e;
+      Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 50);
+    }
+  }
 }
 
 export interface DraftLockOptions {

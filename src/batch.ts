@@ -7,7 +7,7 @@
 // `--markets depop` run is the interactive Depop session on one long-lived BrowserSession.
 
 import { createHash } from "node:crypto";
-import { appendFileSync, existsSync, mkdirSync, readdirSync, readFileSync, renameSync, statSync, writeFileSync } from "node:fs";
+import { appendFileSync, existsSync, mkdirSync, readdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { basename, join, resolve } from "node:path";
 import { unmappedFields } from "./brain/market-fields.js";
 import { cfg } from "./config.js";
@@ -19,6 +19,7 @@ import {
   newDraftFile,
   postDraft,
   readDraftFile,
+  renameReplacing,
   withDraftLock,
   writeDraftFile,
   type DraftFile,
@@ -208,7 +209,7 @@ export function writeBatchIndex(dir: string, now: Date = new Date()): BatchIndex
 /** Same tmp + rename as writeDraftFile, so a reader never sees half an index. */
 function writeFileAtomic(path: string, text: string): void {
   writeFileSync(`${path}.tmp`, text);
-  renameSync(`${path}.tmp`, path);
+  renameReplacing(`${path}.tmp`, path);
 }
 
 // ---------- the runner ----------

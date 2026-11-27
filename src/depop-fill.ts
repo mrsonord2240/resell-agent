@@ -41,8 +41,10 @@ export const DEPOP = {
     brand: '[data-testid="brand__input"], [aria-label="Brand"]',
     color: '[data-testid="colour__select"], [aria-label="Colour"]',
     shipping: '[data-testid="parcel-size__radio"], input[name="parcelSize"]',
-    /** Never clicked by the tool: a click on it (by Sam) is a possible submit even when no create request is recognised. */
-    submit: '[data-testid="submit__button"], form button[type="submit"]',
+    /** Post. Never clicked by the tool: a click on it (by Sam) is a possible submit even when no create request is recognised. */
+    submit: '[data-testid="submit__button"]',
+    /** Post, if Depop drops the testid: a submit button, counted only inside the form that holds the title or price field. */
+    submitFallback: 'button[type="submit"]',
     option: '[role="option"]',
   },
   halt: {
@@ -165,6 +167,11 @@ export class TabWatch {
 
   get submitSeen(): boolean {
     return this.submitAt !== null;
+  }
+
+  /** A submit, or a Post click: Post may have been clicked, so this tab must never read as not posted. */
+  get mayHavePosted(): boolean {
+    return this.submitAt !== null || this.postClicked;
   }
 
   note(text: string): void {
@@ -309,11 +316,49 @@ async function present(page: any, selector: string, waitMs = 0): Promise<boolean
   return (await page.locator(selector).count()) > 0;
 }
 
+/** What the page-side Post checks need: the Post selectors and the fields that identify the sell form. */
+function postSelectors() {
+  const S = DEPOP.selectors;
+  return { primary: S.submit, fallback: S.submitFallback, field: `${S.title}, ${S.price}` };
+}
+
+/** Post is present: its testid, or a submit button inside the sell form (never another form's, e.g. a header search). */
+export async function hasPostButton(page: any): Promise<boolean> {
+  return page
+    .evaluate(({ primary, fallback, field }: ReturnType<typeof postSelectors>) => {
+      if (document.querySelector(primary)) return true;
+      const form = document.querySelector(field)?.closest("form");
+      return !!form && !!form.querySelector(fallback);
+    }, postSelectors())
+    .catch(() => false);
+}
+
+/**
+ * C1: reports Sam's Post clicks and the sell form's submit to the runner. Added as an init script, so it is in
+ * place before the form loads and again after any reload; `__resellPost` / `__resellFocus` are exposed bindings.
+ */
+function pageWatchers({ primary, fallback, field }: ReturnType<typeof postSelectors>): void {
+  const sellForm = () => document.querySelector(field)?.closest("form") ?? null;
+  const isPost = (el: Element | null) => {
+    if (!el?.closest) return false;
+    if (el.closest(primary)) return true;
+    const button = el.closest(fallback);
+    const form = sellForm();
+    return !!button && !!form && form.contains(button);
+  };
+  const post = () => (window as any).__resellPost?.();
+  document.addEventListener("click", (e) => isPost(e.target as Element | null) && post(), true);
+  document.addEventListener("submit", (e) => e.target === sellForm() && post(), true);
+  const focus = () => (window as any).__resellFocus?.();
+  window.addEventListener("focus", focus);
+  document.addEventListener("visibilitychange", () => document.visibilityState === "visible" && focus());
+}
+
 /** E14 stage 1: which blank-form controls are missing. Waits for the form to render first. */
 export async function missingBaseControls(page: any, waitMs = 15_000): Promise<string[]> {
   await present(page, ALL_FIELDS.photos, waitMs);
   const missing: string[] = [];
-  for (const f of PREFLIGHT_CONTROLS) if (!(await present(page, ALL_FIELDS[f]))) missing.push(f);
+  for (const f of PREFLIGHT_CONTROLS) if (!(f === "submit" ? await hasPostButton(page) : await present(page, ALL_FIELDS[f]))) missing.push(f);
   return missing;
 }
 
@@ -452,7 +497,7 @@ export async function fillDepopForm(page: any, listing: ListingDraft, photoPaths
 
   for (const f of BASE_FIELDS) await need(f);
   // Without the Post button no click can be seen, and a missed submit would read as not_posted (C1).
-  if (!(await present(page, S.submit))) throw new FillError("Depop: couldn't find the Post button on the sell form.");
+  if (!(await hasPostButton(page))) throw new FillError("Depop: couldn't find the Post button on the sell form.");
 
   const photos = photoPaths.slice(0, DEPOP.maxPhotos);
   if (photoPaths.length > photos.length) notes.push(`Only the first ${DEPOP.maxPhotos} of ${photoPaths.length} photos were added.`);
@@ -726,7 +771,73 @@ export async function openDepopSession(opts: DepopSessionOptions = {}): Promise<
     const page = await chrome.context.newPage();
     ours.add(page);
 
-    // ---- fill (no submit can have happened yet: a throw here is an `error`) ----
+    // ---- watchers first: every submit signal is live before the form is touched, so a Post click the instant
+    // the banner appears, or after a reload of the form, is still seen (C1) ----
+    const watch = new TabWatch(captureMs);
+    let wake = () => {};
+    const entry = { watch, wake: () => wake() };
+    let armed = false; // the close and navigation rules apply once the tab is filled and waiting
+    let filled: Record<string, string> = {};
+    let edits: Record<string, string> = {};
+    let stock: StockWatcher | null = null;
+    let timer: ReturnType<typeof setInterval> | undefined;
+    // S4: Sam may edit before posting. Compared against the latest snapshot (taken every tick) at the
+    // create request itself, so the note is in place before the URL can resolve the tab.
+    const checkEdits = () => {
+      const names = Object.keys(filled).filter((k) => edits[k] !== undefined && edits[k] !== filled[k]);
+      if (names.length) watch.note(`Posted values may differ: ${names.join(", ")} edited in the tab.`);
+    };
+    page.on("request", (req: any) => {
+      if (!isCreateRequest(site, req.url(), req.method())) return;
+      checkEdits();
+      watch.handle({ kind: "create" }, now());
+      wake();
+    });
+    page.on("response", (res: any) => {
+      const req = res.request();
+      if (!isCreateRequest(site, req.url(), req.method())) return;
+      void res
+        .json()
+        .then((body: unknown) => {
+          const url = listingUrlFromCreateBody(site, body);
+          if (url) watch.handle({ kind: "listing", url }, now());
+        })
+        .catch(() => undefined)
+        .finally(() => wake());
+    });
+    page.on("framenavigated", (frame: any) => {
+      if (!armed || frame !== page.mainFrame()) return;
+      const url = frame.url();
+      const listingUrl = listingUrlOf(site, url);
+      if (listingUrl) watch.handle({ kind: "listing", url: listingUrl }, now());
+      else if (isLoginUrl(site, url)) watch.handle({ kind: "login", url }, now());
+      else if (!isSellForm(site, url)) watch.handle({ kind: "left", url }, now());
+      wake();
+    });
+    page.on("close", () => {
+      if (!armed || watch.outcome) return; // the runner closing its own tab is not Sam closing one
+      const at = now();
+      closes.push(at);
+      // Wait a moment: closing the window closes every tab at once, and that reads as unknown (S4).
+      setTimeout(() => {
+        watch.handle({ kind: isWindowClose(at, closes, disconnected || homeGone, burstMs) ? "window-closed" : "closed" }, now());
+        wake();
+      }, burstMs);
+    });
+    try {
+      await page.exposeBinding("__resellPost", () => {
+        watch.handle({ kind: "post-clicked" }, now());
+        wake();
+      });
+      await page.exposeBinding("__resellFocus", () => void stock?.focus(now()));
+      await page.addInitScript(pageWatchers, postSelectors());
+    } catch (e) {
+      // Without the Post watcher a missed submit could read as not posted: don't fill this tab.
+      await page.close().catch(() => undefined);
+      return { status: "error", message: `Depop: couldn't watch the tab's Post button (${e instanceof Error ? e.message : String(e)}). Not filled.` };
+    }
+
+    // ---- fill (Post is watched already; the tool never clicks it) ----
     let report: FillReport;
     try {
       await page.goto(site.sellUrl, { waitUntil: "domcontentloaded" });
@@ -746,22 +857,21 @@ export async function openDepopSession(opts: DepopSessionOptions = {}): Promise<
         throw new FillError(`Depop halted: ${after}.`);
       }
     } catch (e) {
+      const msg = e instanceof FillError || /^Depop/.test(String((e as Error)?.message)) ? (e as Error).message : `Depop fill failed: ${e instanceof Error ? e.message : String(e)}`;
+      // Sam clicked Post (or a create went out) while the form was still filling: the tab stays, verify-first.
+      if (watch.outcome && "status" in watch.outcome) return watch.outcome;
+      if (watch.mayHavePosted) {
+        return { status: "unknown", message: `Post was clicked while the form was still filling, and the fill then stopped (${msg}). ${VERIFY}` };
+      }
       // A half-filled tab is closed so it can't be posted; `error` is re-filled next run.
       const shot = await screenshot(page, ctx);
       await page.close().catch(() => undefined);
-      const msg = e instanceof FillError || /^Depop/.test(String((e as Error)?.message)) ? (e as Error).message : `Depop fill failed: ${e instanceof Error ? e.message : String(e)}`;
       return { status: "error", message: `${msg}${shot ? ` Screenshot: ${shot}` : ""}` };
     }
 
     // ---- wait for Sam (from here on, nothing throws) ----
-    const watch = new TabWatch(captureMs);
-    let wake = () => {};
-    const entry = { watch, wake: () => wake() };
     waiting.add(entry);
-    let filled: Record<string, string> = {};
-    let edits: Record<string, string> = {};
-    let stock: StockWatcher | null = null;
-    let timer: ReturnType<typeof setInterval> | undefined;
+    armed = true;
     try {
       const head = report.needsSam.length
         ? `resell-agent: ${ctx.label}. Fill these yourself: ${report.needsSam.join(", ")} (outlined). Then review and click Post.`
@@ -771,81 +881,11 @@ export async function openDepopSession(opts: DepopSessionOptions = {}): Promise<
       filled = await readEdits(page).catch(() => ({}));
       edits = filled;
 
-      // S4: Sam may edit before posting. Compared against the latest snapshot (taken every tick) at the
-      // create request itself, so the note is in place before the URL can resolve the tab.
-      const checkEdits = () => {
-        const names = Object.keys(filled).filter((k) => edits[k] !== undefined && edits[k] !== filled[k]);
-        if (names.length) watch.note(`Posted values may differ: ${names.join(", ")} edited in the tab.`);
-      };
-      page.on("request", (req: any) => {
-        if (!isCreateRequest(site, req.url(), req.method())) return;
-        checkEdits();
-        watch.handle({ kind: "create" }, now());
-        wake();
-      });
-      page.on("response", (res: any) => {
-        const req = res.request();
-        if (!isCreateRequest(site, req.url(), req.method())) return;
-        void res
-          .json()
-          .then((body: unknown) => {
-            const url = listingUrlFromCreateBody(site, body);
-            if (url) watch.handle({ kind: "listing", url }, now());
-          })
-          .catch(() => undefined)
-          .finally(() => wake());
-      });
-      page.on("framenavigated", (frame: any) => {
-        if (frame !== page.mainFrame()) return;
-        const url = frame.url();
-        const listingUrl = listingUrlOf(site, url);
-        if (listingUrl) watch.handle({ kind: "listing", url: listingUrl }, now());
-        else if (isLoginUrl(site, url)) watch.handle({ kind: "login", url }, now());
-        else if (!isSellForm(site, url)) watch.handle({ kind: "left", url }, now());
-        wake();
-      });
-      page.on("close", () => {
-        if (watch.outcome) return; // the runner closing a resolved tab is not Sam closing one
-        const at = now();
-        closes.push(at);
-        // Wait a moment: closing the window closes every tab at once, and that reads as unknown (S4).
-        setTimeout(() => {
-          watch.handle({ kind: isWindowClose(at, closes, disconnected || homeGone, burstMs) ? "window-closed" : "closed" }, now());
-          wake();
-        }, burstMs);
-      });
-
-      // C1 fail-safe: a click on Post (or a form submit) is reported from the page, so a create call that
-      // doesn't match DEPOP.createRequest still makes a closed tab verify-first.
-      await page
-        .exposeBinding("__resellPost", () => {
-          watch.handle({ kind: "post-clicked" }, now());
-          wake();
-        })
-        .then(() =>
-          page.evaluate((selector: string) => {
-            const call = () => (window as any).__resellPost?.();
-            document.addEventListener("click", (e) => (e.target as Element | null)?.closest?.(selector) && call(), true);
-            document.addEventListener("submit", call, true);
-          }, DEPOP.selectors.submit)
-        )
-        .catch((e: unknown) => log(`Depop tab for ${ctx.label}: couldn't watch the Post button (${e instanceof Error ? e.message : e}).`));
-
       if (ctx.stock) {
         const show = async (b: StockBanner) => {
           await setBanner(page, "stock", b === "sold" ? SOLD_BANNER : b === "unconfirmed" ? UNCONFIRMED_BANNER : null, b === "sold" ? "red" : "amber");
         };
         stock = new StockWatcher(ctx.stock, show, checkedAt, ctx.stockUnconfirmed ? "unconfirmed" : null);
-        await page
-          .exposeBinding("__resellFocus", () => void stock!.focus(now()))
-          .then(() =>
-            page.evaluate(() => {
-              const call = () => (window as any).__resellFocus?.();
-              window.addEventListener("focus", call);
-              document.addEventListener("visibilitychange", () => document.visibilityState === "visible" && call());
-            })
-          )
-          .catch(() => undefined);
       }
 
       timer = setInterval(() => {
