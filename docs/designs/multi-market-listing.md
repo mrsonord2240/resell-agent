@@ -138,7 +138,7 @@ Personal use. It ships through the existing desktop app (`desktop/`, Electron) a
 
 ## Next Steps
 
-Build order is the Implementation Tasks list (T1 to T7), as amended by the eng review. Poshmark (D1) and the GUI batch view (D2) are in TODOS.md.
+Build order is the Implementation Tasks list (T1 to T8), as amended by the eng review. Poshmark (D1) and the GUI batch view (D2) are in TODOS.md.
 
 ## What I noticed about how you think
 
@@ -533,26 +533,29 @@ Amended by the eng review (2026-11-26); each task cites the decisions it carries
   - Surfaced by: O3, P2, E8, E13, F6.
   - Files: `src/ebay/media.ts` (new), `src/ebay/sell.ts`, `src/publish.ts`, `src/gui.ts:723`, `src/config.ts`.
   - Verify: unit tests with a mocked fetch (upload, 401 scope error, 429 backoff, offer resume, published-offer found, env match and mismatch), plus one real eBay publish from local photos.
-- [ ] **T2 (P1, human ~3h / CC ~20min)**: types and brain. Add per-market fields on `ListingDraft` with a mapping step and an unmapped fallback.
+- [x] **T2 (P1, human ~3h / CC ~20min, done 2026-11-27)**: types and brain. Add per-market fields on `ListingDraft` with a mapping step and an unmapped fallback.
   - Surfaced by: S2.
   - Files: `src/types.ts`, `src/brain/listing.ts`.
   - Verify: unit tests for a valid map, malformed JSON and invalid category; eval cases for the mapping prompt.
-- [ ] **T3 (P1, human ~4h / CC ~30min)**: publish and draft lock. Pass a runner-owned `browserSession` through `publishDraftBundle`'s `deps` (E2). State rules: skip and keep `unknown` for browser markets only (D6), `not_posted`, `held`, exit code from merged state (O9); eBay skips a prior `published` only on a matching `env` (E13). Draft lock: pid-and-time stale lock (O8); a Depop fill locks only to write `filling` with an attempt id and to merge its result after re-reading the file; the result write waits up to 30 s for the lock and otherwise logs the result and records `unknown` (E7, C2); a `mark` during the wait stands unless a submit was seen; a mismatched attempt id records `unknown` (E11).
+- [x] **T3 (P1, human ~4h / CC ~30min, done 2026-11-27)**: publish and draft lock. Pass a runner-owned `browserSession` through `publishDraftBundle`'s `deps` (E2). State rules: skip and keep `unknown` for browser markets only (D6), `not_posted`, `held`, exit code from merged state (O9); eBay skips a prior `published` only on a matching `env` (E13). Draft lock: pid-and-time stale lock (O8); a Depop fill locks only to write `filling` with an attempt id and to merge its result after re-reading the file; the result write waits up to 30 s for the lock and otherwise logs the result and records `unknown` (E7, C2); a `mark` during the wait stands unless a submit was seen; a mismatched attempt id records `unknown` (E11).
   - Surfaced by: S4, D6, O8, O9, E2, E7, E11, E13, C2.
   - Files: `src/publish.ts`, `src/draft-file.ts`.
   - Verify: unit tests for the transition table, the re-read merge, mark-during-wait, lock contention at submit, and stale-lock break.
-- [ ] **T4 (P1, human ~8h / CC ~60min)**: depop. Assisted-fill script on installed Chrome over CDP: dedicated `%LOCALAPPDATA%` profile, random 127.0.0.1 debug port read from `DevToolsActivePort`, Chrome closed at session end (E3, E9); attach to an already-running profile Chrome or stop with "close the Depop Chrome window"; clear error when Chrome is missing (F5); close tabs the run did not open (E11); rolling window of 3 tabs, `--tabs N` (E4); two-stage selector preflight (E14); submit detection; O4 pre-fill eBay check plus re-check every 10 min and on refocus after 5+ min with a sold banner (E12); run log and error screenshots in `<item>/.resell/` (D4, E10). Remove the `*_BROWSER_FLOW` env flows and `ENABLE_BROWSER_AUTOMATION` gate (F4). Swap `playwright` for `playwright-core` and drop its build exclusion (E6).
+- [x] **T4 (P1, human ~8h / CC ~60min, built 2026-11-27; Sam's live checks pending: first session's selectors and submit detection, one live listing, one fill from the packaged app)**: depop. Assisted-fill script on installed Chrome over CDP: dedicated `%LOCALAPPDATA%` profile, random 127.0.0.1 debug port read from `DevToolsActivePort`, Chrome closed at session end (E3, E9); attach to an already-running profile Chrome or stop with "close the Depop Chrome window"; clear error when Chrome is missing (F5); close tabs the run did not open (E11); rolling window of 3 tabs, `--tabs N` (E4); two-stage selector preflight (E14); submit detection; O4 pre-fill eBay check plus re-check every 10 min and on refocus after 5+ min with a sold banner (E12); run log and error screenshots in `<item>/.resell/` (D4, E10). Remove the `*_BROWSER_FLOW` env flows and `ENABLE_BROWSER_AUTOMATION` gate (F4). Swap `playwright` for `playwright-core` and drop its build exclusion (E6).
   - Surfaced by: D4, D5, O4, E3, E4, E6, E9, E10, E11, E12, E14, F4, F5.
   - Files: `src/depop-fill.ts` (new), `src/browser-automation.ts`, `src/gui.ts:342`, `package.json`.
   - Verify: unit tests; offline Playwright tests against a saved sell-form fixture covering two category paths in `npm test`; kill-during-wait then re-run leaves no pre-existing tab; one live listing; one fill from the packaged app.
-- [ ] **T5 (P1, human ~5h / CC ~35min)**: cli and batch. `post-batch` (two phases, O1; intake drafts every enabled market regardless of `--markets`, C7; creates `draft.json` only when absent, an unparseable one is an `error` row and never overwritten, O2; SKU from a hash of top-level photos, E8, E10; held when an inferred brand or `price.sampleSize < 3`, O5, C5), `status --batch`, `mark`.
+- [x] **T5 (P1, human ~5h / CC ~35min, done 2026-11-27)**: cli and batch. `post-batch` (two phases, O1; intake drafts every enabled market regardless of `--markets`, C7; creates `draft.json` only when absent, an unparseable one is an `error` row and never overwritten, O2; SKU from a hash of top-level photos, E8, E10; held when an inferred brand or `price.sampleSize < 3`, O5, C5), `status --batch`, `mark`.
   - Surfaced by: D2, D3, O1, O2, O5, E8, E10, C5, C7.
   - Files: `src/cli.ts`, `src/draft-file.ts`, `src/batch.ts` (new).
   - Verify: CLI spawn tests (help, empty dir exit 2, held exit 3, mark transitions); same photos give the same SKU; a screenshot in `.resell/` changes neither SKU nor uploads; E2E: night eBay phase then Depop phase on one folder, and an interrupted run recovered (Codex recommendation).
-- [ ] **T6 (P2, human ~1h / CC ~10min)**: gui. Add Mark posted / not posted buttons on GUI drafts, and make the TTL skip unresolved drafts.
+- [x] **T6 (P2, human ~1h / CC ~10min, done 2026-11-27)**: gui. Add Mark posted / not posted buttons on GUI drafts, and make the TTL skip unresolved drafts.
   - Surfaced by: O7.
   - Files: `src/gui.ts`, `src/gui-client.ts`.
   - Verify: unit test of the TTL sweep, plus a manual click.
+- [x] **T8 (P2, added 2026-11-26, done 2026-11-27)**: gui. Drafts list: open, edit item specifics, delete stored GUI drafts; the TTL also keeps any draft with a `published` result; unmapped Depop fields flagged in the publish panel (S11).
+  - Surfaced by: Sam, 2026-11-26: "there is no way to select or view existing drafts from the gui".
+  - Files: `src/gui-drafts.ts` (new), `src/gui.ts`, `src/gui-client.ts`.
 - [ ] **T7 (P2, Sam, ~10min)**: Email developers@depop.com about Partner API access.
   - Surfaced by: Premise 5.
 
