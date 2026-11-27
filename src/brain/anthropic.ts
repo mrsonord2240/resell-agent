@@ -46,12 +46,23 @@ export async function complete(system: string, messages: Msg[], maxTokens = 1000
   return text;
 }
 
-// Models sometimes wrap JSON in prose or ```json fences. Pull out the object.
+// Models sometimes wrap JSON in prose or ```json fences, or send a second object after the
+// first (a revised draft). Take the first complete object; braces inside strings don't count.
 export function parseJson<T>(raw: string): T {
   const fenced = raw.match(/```(?:json)?\s*([\s\S]*?)```/);
   const body = fenced ? fenced[1] : raw;
   const start = body.indexOf("{");
-  const end = body.lastIndexOf("}");
-  if (start === -1 || end === -1) throw new Error(`no JSON in model reply: ${raw.slice(0, 200)}`);
-  return JSON.parse(body.slice(start, end + 1)) as T;
+  if (start === -1) throw new Error(`no JSON in model reply: ${raw.slice(0, 200)}`);
+  let depth = 0;
+  let inString = false;
+  for (let i = start; i < body.length; i++) {
+    const c = body[i];
+    if (inString) {
+      if (c === "\\") i++;
+      else if (c === '"') inString = false;
+    } else if (c === '"') inString = true;
+    else if (c === "{") depth++;
+    else if (c === "}" && --depth === 0) return JSON.parse(body.slice(start, i + 1)) as T;
+  }
+  throw new Error(`no complete JSON object in model reply: ${raw.slice(0, 200)}`);
 }
