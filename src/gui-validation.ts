@@ -1,4 +1,4 @@
-import type { DraftBundle, ListingDraft, Platform } from "./types.js";
+import { DESCRIPTION_LIMITS, PLATFORM_NAMES, type DraftBundle, type ListingDraft, type Platform } from "./types.js";
 
 export const GUI_PLATFORMS: readonly Platform[] = ["ebay", "poshmark", "depop"];
 
@@ -114,6 +114,8 @@ export function mergeEditableListingFields(
     }
     if (Object.hasOwn(input, "description")) {
       listing.description = editableText(input.description, `${input.platform} description`, MAX_DESCRIPTION_LENGTH);
+      const over = descriptionOverLimit(input.platform, listing.description);
+      if (over) throw new Error(over);
     }
     if (Object.hasOwn(input, "price")) listing.price = editablePrice(input.price, input.platform !== "ebay");
     if (Object.hasOwn(input, "categoryId")) {
@@ -148,6 +150,14 @@ export function mergeEditableListingFields(
 /** eBay's own ceiling for a parcel is 150 lb. Anything else is not a weight. */
 export function validPackageWeightLb(value: unknown): number | undefined {
   return typeof value === "number" && Number.isFinite(value) && value > 0 && value <= 150 ? value : undefined;
+}
+
+/** Why this description won't fit the market's box, or null when it fits. */
+export function descriptionOverLimit(platform: Platform, description: string): string | null {
+  const limit = DESCRIPTION_LIMITS[platform];
+  if (!limit || description.length <= limit) return null;
+  const name = PLATFORM_NAMES[platform];
+  return `${name} description is ${description.length.toLocaleString("en-US")} characters; ${name} allows ${limit.toLocaleString("en-US")}. Shorten it on the ${name} card.`;
 }
 
 export function stableGuiSku(draftId: string, configuredPrefix = ""): string {

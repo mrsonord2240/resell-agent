@@ -337,6 +337,7 @@ function renderPage(boot: GuiBootState): string {
     .copy-status { color: var(--muted); font-size: 0.76rem; }
     .copy-status[data-kind="success"] { color: var(--green); }
     .copy-status[data-kind="error"] { color: var(--red); }
+    [data-desc-count][data-over="true"] { color: var(--red); }
     .results { display: grid; gap: 0.55rem; margin-top: 1rem; }
     .result { border-left: 3px solid var(--line); padding: 0.7rem 0.8rem; background: var(--surface-2); }
     .result.published { border-color: var(--green); }

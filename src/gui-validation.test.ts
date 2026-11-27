@@ -44,6 +44,10 @@ const manualPrice = mergeEditableListingFields(draft, [{ platform: "depop", pric
 assert.equal(manualPrice.listings[1].price, 0);
 assert.throws(() => mergeEditableListingFields(draft, [{ platform: "ebay", price: Number.NaN }]), /finite positive/);
 assert.throws(() => mergeEditableListingFields(draft, [{ platform: "depop", categoryId: "123" }]), /Only eBay/);
+// Depop's description cap (1,000) is enforced on save with a message that says what to cut; eBay has none.
+assert.throws(() => mergeEditableListingFields(draft, [{ platform: "depop", description: "x".repeat(1001) }]), /Depop description is 1,001 characters; Depop allows 1,000/);
+assert.equal(mergeEditableListingFields(draft, [{ platform: "depop", description: "x".repeat(1000) }]).listings[1].description.length, 1000);
+assert.equal(mergeEditableListingFields(draft, [{ platform: "ebay", description: "x".repeat(1001) }]).listings[0].description.length, 1001);
 // eBay package weight (lb) is editable; blank clears it; Depop has none.
 const weighed = mergeEditableListingFields(draft, [{ platform: "ebay", packageWeightLb: 2.5 }]);
 assert.equal(weighed.listings[0].packageWeightLb, 2.5);

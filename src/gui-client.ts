@@ -1,4 +1,4 @@
-import type { Platform } from "./types.js";
+import { DESCRIPTION_LIMITS, type Platform } from "./types.js";
 
 export interface GuiBootState {
   platforms: Platform[];
@@ -18,6 +18,7 @@ function escapeJsonForScript(value: unknown): string {
 export function buildGuiScript(boot: GuiBootState): string {
   const lines: string[] = [
     `const BOOT = ${escapeJsonForScript(boot)};`,
+    `const DESCRIPTION_LIMITS = ${escapeJsonForScript(DESCRIPTION_LIMITS)};`,
     "const state = { draftId: null, draft: null, unmapped: {}, draftRows: [], localPreviewUrls: [], serverPreviewUrls: [], publishResults: [], saveTimer: null, viewToken: 0 };",
     "const els = {",
     "  form: document.getElementById('draft-form'),",
@@ -278,6 +279,11 @@ export function buildGuiScript(boot: GuiBootState): string {
     "  if (!fields.length) return '';",
     "  return '<div class=\"unmapped-note\" data-unmapped><strong>Fill these yourself on Depop:</strong> ' + fields.map(function (f) { return escapeHtml(FIELD_LABELS[f] || f); }).join(', ') + '. The tool could not pick them, so the form leaves them blank.</div>';",
     "}",
+    "function descriptionCount(platform, text) {",
+    "  var limit = DESCRIPTION_LIMITS[platform];",
+    "  var n = String(text || '').length;",
+    "  return n.toLocaleString('en-US') + ' / ' + limit.toLocaleString('en-US') + ' characters' + (n > limit ? ' (over by ' + (n - limit).toLocaleString('en-US') + '; shorten before publishing)' : '');",
+    "}",
     "function renderListingCard(listing) {",
     "  var categoryField = listing.platform === 'ebay' ? '<label>Category ID<input data-field=\"categoryId\" value=\"' + escapeHtml(listing.categoryId || '') + '\"></label>' +",
     "    '<label>Package weight (lb)<input data-field=\"packageWeightLb\" type=\"number\" step=\"0.1\" min=\"0.1\" max=\"150\" value=\"' + escapeHtml(listing.packageWeightLb == null ? '' : listing.packageWeightLb) + '\"><span class=\"field-help\">Item plus box; estimated, check it on a scale.</span></label>' : '';",
@@ -285,7 +291,7 @@ export function buildGuiScript(boot: GuiBootState): string {
     "  return '<article class=\"listing-card\" data-platform=\"' + listing.platform + '\">' +",
     "    '<header><div><h3>' + listing.platform.toUpperCase() + '</h3><p class=\"muted\">Condition: ' + escapeHtml(listing.condition || '') + '</p></div><div class=\"publish-status\" data-status data-kind=\"idle\">Ready</div></header>' +",
     "    '<label>Title<input data-field=\"title\" value=\"' + escapeHtml(listing.title) + '\"></label>' +",
-    "    '<label>Description<textarea data-field=\"description\" rows=\"9\">' + escapeHtml(listing.description) + '</textarea></label>' +",
+    "    '<label>Description<textarea data-field=\"description\" rows=\"9\">' + escapeHtml(listing.description) + '</textarea>' + (DESCRIPTION_LIMITS[listing.platform] ? '<span class=\"field-help\" data-desc-count data-over=\"' + (String(listing.description || '').length > DESCRIPTION_LIMITS[listing.platform]) + '\">' + descriptionCount(listing.platform, listing.description) + '</span>' : '') + '</label>' +",
     "    '<div class=\"two-col\"><label>Price<input data-field=\"price\" type=\"number\" step=\"0.01\" value=\"' + escapeHtml(listing.price) + '\"></label>' + categoryField + '</div>' +",
     "    (listing.platform === 'ebay' ? specificsEditor(listing.itemSpecifics) : '') +",
     "    (listing.platform === 'depop' ? unmappedNote('depop') : '') +",
@@ -627,6 +633,13 @@ export function buildGuiScript(boot: GuiBootState): string {
     "  }",
     "  var remove = target.closest('[data-spec-remove]');",
     "  if (remove) { remove.closest('[data-spec-row]').remove(); queueDraftSave(); }",
+    "});",
+    "els.listingCards.addEventListener('input', function (event) {",
+    "  var t = event.target;",
+    "  if (!t || !t.matches || !t.matches('[data-field=\"description\"]')) return;",
+    "  var card = t.closest('[data-platform]');",
+    "  var count = card ? card.querySelector('[data-desc-count]') : null;",
+    "  if (count) { count.textContent = descriptionCount(card.dataset.platform, t.value); count.dataset.over = t.value.length > DESCRIPTION_LIMITS[card.dataset.platform] ? 'true' : 'false'; }",
     "});",
     "els.listingCards.addEventListener('input', function (event) { if (event.target && event.target.closest && event.target.closest('[data-spec-row]')) queueDraftSave(); });",
     "async function recoverDraft() {",

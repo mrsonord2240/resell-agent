@@ -8,6 +8,8 @@ const script = buildGuiScript({
   ebayDefaults: { sku: "", merchantLocationKey: "", fulfillmentPolicyId: "", paymentPolicyId: "", returnPolicyId: "" },
 });
 const lines = script.split("\n");
+// The whole script must parse: one broken string in it blanks the GUI.
+new Function(script);
 /** One top-level declaration of the script: the single line, or a function through its closing `}`. */
 function source(start: string): string {
   const i = lines.findIndex((l) => l.startsWith(start));
@@ -54,6 +56,16 @@ for (const state of ["unknown", "filling"]) {
   assert.deepEqual(sections.map((s) => s.hidden), [false, false, true]);
   assert.equal(attrs["listing:aria-current"], "page");
   assert.equal(attrs["drafts:aria-current"], null);
+}
+
+// The Depop description counter shows the cap and how far over it is.
+{
+  const limits = lines.find((l) => l.startsWith("const DESCRIPTION_LIMITS"))!;
+  const descriptionCount = new Function(`${limits}
+${source("function descriptionCount(")}
+return descriptionCount;`)() as (p: string, t: string) => string;
+  assert.equal(descriptionCount("depop", "x".repeat(999)), "999 / 1,000 characters");
+  assert.equal(descriptionCount("depop", "x".repeat(1250)), "1,250 / 1,000 characters (over by 250; shorten before publishing)");
 }
 
 console.log("gui-client ok");

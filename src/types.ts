@@ -65,6 +65,10 @@ export interface MarketField {
   mapped: boolean;
 }
 
+// Marketplace description caps (characters). eBay has none worth enforcing.
+export const DESCRIPTION_LIMITS: Partial<Record<Platform, number>> = { depop: 1000, poshmark: 1500 };
+export const PLATFORM_NAMES: Record<Platform, string> = { ebay: "eBay", poshmark: "Poshmark", depop: "Depop" };
+
 export const DEPOP_FIELD_NAMES = ["category", "size", "brand", "condition", "color", "shipping"] as const;
 export type DepopFieldName = (typeof DEPOP_FIELD_NAMES)[number];
 export type DepopFields = Record<DepopFieldName, MarketField>;

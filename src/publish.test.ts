@@ -140,6 +140,19 @@ assert.deepEqual(fromPhotos.imageUrls, []);
 assert.deepEqual(fromPhotos.photoPaths, ["/tmp/photo1.jpg"]);
 assert.throws(() => toEbayOptions(draft, settingsNoUrls, undefined, "", []), /photos or public HTTPS image URLs/);
 
+// Depop caps descriptions at 1,000 characters: an over-long one stops before any tab is filled.
+{
+  const long = { ...draft, listings: draft.listings.map((l) => (l.platform === "depop" ? { ...l, description: "x".repeat(1001) } : l)) };
+  let filled = 0;
+  const out = await publishDraftBundle(
+    { draft: long, photoPaths: ["/tmp/photo1.jpg"], platforms: ["depop"] },
+    { browserSession: { fill: async () => { filled++; return { status: "published", message: "", url: "https://www.depop.com/products/1/" }; } } }
+  );
+  assert.equal(filled, 0);
+  assert.equal(out.results[0].status, "error");
+  assert.match(out.results[0].message, /1,001 characters; Depop allows 1,000/);
+}
+
 // eBay calculated shipping needs the package weight (errorId 25020): the draft's estimate is sent,
 // a typed weight wins, and a draft with none stops before anything reaches eBay.
 assert.equal(fromPhotos.packageWeightLb, 2);

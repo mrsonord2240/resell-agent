@@ -1,6 +1,6 @@
 import { cfg } from "./config.js";
 import { publishListing, type PostOptions } from "./ebay/sell.js";
-import { GUI_PLATFORMS, stableGuiSku, validPackageWeightLb } from "./gui-validation.js";
+import { descriptionOverLimit, GUI_PLATFORMS, stableGuiSku, validPackageWeightLb } from "./gui-validation.js";
 
 export { validPackageWeightLb };
 import type { DraftBundle, ListingDraft, Platform } from "./types.js";
@@ -293,6 +293,9 @@ async function browserResult(platform: BrowserMarket, listing: ListingDraft, pho
   if (!photoPaths.length) {
     return { platform, status: "error", message: `Browser publishing for ${platform} needs the uploaded photo files from the draft step.` };
   }
+  // The form would cut it silently; stop before a tab opens instead.
+  const over = descriptionOverLimit(platform, listing.description);
+  if (over) return { platform, status: "error", message: over };
   return fillInSession(deps.browserSession, deps.fillRecorder, platform, listing, photoPaths);
 }
 
