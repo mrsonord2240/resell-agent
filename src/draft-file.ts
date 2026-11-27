@@ -12,6 +12,8 @@ import {
   isPublishComplete,
   mergePublishResults,
   publishDraftBundle,
+  skipReason,
+  type BeginFillOutcome,
   type BrowserMarket,
   type EbayPublishSettings,
   type FillRecorder,
@@ -171,21 +173,29 @@ export async function withDraftLock<T>(path: string, fn: () => Promise<T>, opts:
   }
 }
 
-/** E7: lock, re-read, write `filling` with a fresh attempt id, unlock. The tab's wait then runs unlocked. */
-export async function beginFill(draftPath: string, platform: BrowserMarket, lock: DraftLockOptions = {}): Promise<string> {
-  const attemptId = randomUUID();
-  await withDraftLock(
+/**
+ * E7: lock, re-read, write `filling` with a fresh attempt id, unlock. The tab's wait then runs unlocked.
+ * The skip rule is applied again to the stored entry under the lock: the caller decided from an older
+ * read (possibly hours old, behind another market's wait), so a `published`, `unknown`, `filling` or
+ * `held` set since then is reported as a skip and never overwritten.
+ */
+export async function beginFill(draftPath: string, platform: BrowserMarket, lock: DraftLockOptions = {}): Promise<BeginFillOutcome> {
+  return withDraftLock(
     draftPath,
     async () => {
       const file = readDraftFile(draftPath);
+      const stored = file.publishResults.find((r) => r.platform === platform);
+      const skip = skipReason(platform, stored);
+      if (skip) return { skipped: { ...stored!, status: "skipped" as const, message: skip } };
+      const attemptId = randomUUID();
       file.publishResults = mergePublishResults(file.publishResults, [
         { platform, status: "filling", message: `${platform} tab filled; waiting for Post.`, attemptId },
       ]);
       writeDraftFile(draftPath, file);
+      return { attemptId };
     },
     lock
   );
-  return attemptId;
 }
 
 export type FinishFillOutcome =
@@ -363,15 +373,18 @@ export async function postDraft(args: PostArgs, deps: PublishDeps = {}): Promise
   if (waiting.length) {
     const run = await runPublish(file, waiting, ebay, args, { ...deps, fillRecorder: draftFillRecorder(args.draftPath, args.fillLock) });
     results.push(...run.results);
-    // Fills recorded their own results. The rest (no listing, no photos, skips) merge into the latest file;
-    // if the lock stays busy they are dropped, which is safe: none is a state a re-run must honor.
+    // Fills recorded their own results. The rest (no listing, no photos, a failed begin, skips) merge into
+    // the latest file, but never over a state set since the first read that a re-run must honor (the same
+    // skip rule beginFill applies). If the lock stays busy they are dropped, which is safe for the same reason.
     const unfilled = run.results.filter((r) => r.attemptId === undefined);
     if (unfilled.length) {
       await withDraftLock(
         args.draftPath,
         async () => {
           const latest = readDraftFile(args.draftPath);
-          latest.publishResults = mergePublishResults(latest.publishResults, unfilled);
+          const stored = new Map(latest.publishResults.map((r) => [r.platform, r]));
+          const writable = unfilled.filter((r) => !skipReason(r.platform, stored.get(r.platform)));
+          latest.publishResults = mergePublishResults(latest.publishResults, writable);
           writeDraftFile(args.draftPath, latest);
         },
         { waitMs: FILL_RESULT_WAIT_MS, ...args.fillLock }

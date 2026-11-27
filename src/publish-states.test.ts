@@ -116,7 +116,7 @@ const log: string[] = [];
 const recorder: FillRecorder = {
   begin: async (p) => {
     log.push(`begin:${p}`);
-    return "attempt-1";
+    return { attemptId: "attempt-1" };
   },
   finish: async (p, attemptId, result, { submitSeen }) => {
     log.push(`finish:${p}:${attemptId}:${result.status}:${submitSeen}`);
@@ -140,6 +140,13 @@ const lockedBegin = await sessionRun(
   { begin: async () => { throw new Error("draft.json is already being published."); }, finish: recorder.finish }
 );
 assert.strictEqual(lockedBegin.status, "error");
+assert.strictEqual(filled, false);
+// A begin that finds the stored state changed (published since the caller's read) fills nothing and reports the skip.
+const refused = await sessionRun(
+  { fill: async () => { filled = true; return { status: "not_posted", message: "" }; } },
+  { begin: async (p) => ({ skipped: { platform: p, status: "skipped", message: "already published" } }), finish: recorder.finish }
+);
+assert.deepStrictEqual([refused.status, refused.message, refused.attemptId], ["skipped", "already published", undefined]);
 assert.strictEqual(filled, false);
 
 // O9: completeness comes from the merged state of the requested markets.

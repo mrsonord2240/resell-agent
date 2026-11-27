@@ -68,10 +68,13 @@ export interface BrowserSession {
   fill(platform: BrowserMarket, listing: ListingDraft, photoPaths: string[]): Promise<BrowserFillOutcome>;
 }
 
+/** A started fill's attempt id, or the skip to report when the stored state no longer allows a fill. */
+export type BeginFillOutcome = { attemptId: string } | { skipped: PlatformPublishResult };
+
 /** Brackets each session fill with durable writes, so the wait itself holds no lock (E7). */
 export interface FillRecorder {
-  /** Durably records `filling` and returns the attempt id. */
-  begin(platform: BrowserMarket): Promise<string>;
+  /** Re-checks the stored state, then durably records `filling`; a skip means no fill may start. */
+  begin(platform: BrowserMarket): Promise<BeginFillOutcome>;
   /** Records the fill's result and returns the result to report for this run. */
   finish(platform: BrowserMarket, attemptId: string, result: PlatformPublishResult, opts: { submitSeen: boolean }): Promise<PlatformPublishResult>;
 }
@@ -215,8 +218,12 @@ export function isPublishComplete(stored: PlatformPublishResult[], platforms: Pl
   return platforms.every((platform) => byPlatform.get(platform)?.status === "published");
 }
 
-/** Why a market is not attempted this run, or null to attempt it. */
-function skipReason(platform: Platform, prior: PlatformPublishResult | undefined, ebayEnv: "sandbox" | "production"): string | null {
+function currentEbayEnv(): "sandbox" | "production" {
+  return cfg.env === "production" ? "production" : "sandbox";
+}
+
+/** Why a market is not attempted given its stored state, or null to attempt it. */
+export function skipReason(platform: Platform, prior: PlatformPublishResult | undefined, ebayEnv = currentEbayEnv()): string | null {
   if (!prior) return null;
   if (prior.status === "held") {
     return `${platform} is held for review; release the draft with \`resell mark --approve\` first.`;
@@ -243,7 +250,9 @@ async function fillInSession(
 ): Promise<PlatformPublishResult> {
   let attemptId: string | undefined;
   try {
-    attemptId = await recorder?.begin(platform);
+    const begun = await recorder?.begin(platform);
+    if (begun && "skipped" in begun) return begun.skipped;
+    attemptId = begun?.attemptId;
   } catch (error) {
     return { platform, status: "error", message: `${platform} was not filled: ${errorMessage(error)}` };
   }
@@ -273,7 +282,7 @@ export async function publishDraftBundle(
   const results: PlatformPublishResult[] = [];
   const previous = new Map((opts.previousResults ?? []).map((result) => [result.platform, result]));
 
-  const ebayEnv = cfg.env === "production" ? "production" : "sandbox";
+  const ebayEnv = currentEbayEnv();
 
   for (const platform of targets) {
     const prior = previous.get(platform);

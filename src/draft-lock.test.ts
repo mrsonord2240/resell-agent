@@ -30,6 +30,7 @@ const bundle: DraftBundle = {
   listings: [
     { platform: "ebay", title: "Patagonia Fleece", description: "d", price: 68, condition: "good", categoryId: "57988" },
     { platform: "depop", title: "Fleece", description: "d", price: 68, condition: "good" },
+    { platform: "poshmark", title: "Cozy fleece", description: "d", price: 68, condition: "good" },
   ],
 };
 
@@ -46,6 +47,19 @@ function freshDraft(): string {
 const entry = (path: string, platform: string) => readDraftFile(path).publishResults.find((r) => r.platform === platform);
 const depopPosted: PlatformPublishResult = { platform: "depop", status: "published", message: "posted", url: "https://www.depop.com/products/a" };
 const isLocked = (e: unknown) => e instanceof CliError && e.code === "draft_locked";
+/** beginFill that must start a fill; returns its attempt id. */
+async function begin(path: string, platform: "depop" | "poshmark"): Promise<string> {
+  const out = await beginFill(path, platform);
+  assert.ok("attemptId" in out, `expected ${platform} to start filling, got ${JSON.stringify(out)}`);
+  return out.attemptId;
+}
+/** Another writer (an eBay run, or Sam's `mark`) replaces one market's entry under the lock. */
+const setEntry = (path: string, result: PlatformPublishResult) =>
+  withDraftLock(path, async () => {
+    const file = readDraftFile(path);
+    file.publishResults = [...file.publishResults.filter((r) => r.platform !== result.platform), result];
+    writeDraftFile(path, file);
+  });
 
 // The lock file records the holder's pid and time, and is removed afterwards.
 {
@@ -82,16 +96,33 @@ const isLocked = (e: unknown) => e instanceof CliError && e.code === "draft_lock
 // beginFill writes `filling` with an attempt id and leaves the lock free for the wait.
 {
   const path = freshDraft();
-  const attemptId = await beginFill(path, "depop");
+  const attemptId = await begin(path, "depop");
   assert.ok(attemptId);
   assert.deepStrictEqual([entry(path, "depop")?.status, entry(path, "depop")?.attemptId], ["filling", attemptId]);
   assert.ok(!existsSync(`${path}.lock`));
 }
 
+// beginFill re-checks the stored state under the lock: a state set since the caller's read is never overwritten.
+for (const status of ["published", "unknown", "filling", "held"] as const) {
+  const path = freshDraft();
+  await setEntry(path, { platform: "depop", status, message: `set to ${status} by another writer`, url: "https://www.depop.com/products/z" });
+  const before = readFileSync(path, "utf8");
+  const out = await beginFill(path, "depop");
+  assert.ok("skipped" in out, `stored ${status}: beginFill must refuse`);
+  assert.strictEqual(out.skipped.status, "skipped");
+  assert.strictEqual(readFileSync(path, "utf8"), before, `stored ${status}: file unchanged`);
+}
+for (const status of ["not_posted", "error"] as const) {
+  const path = freshDraft();
+  await setEntry(path, { platform: "depop", status, message: "re-fillable" });
+  assert.ok(await begin(path, "depop"));
+  assert.strictEqual(entry(path, "depop")?.status, "filling");
+}
+
 // Re-read merge: another writer changes eBay during the wait; that change survives and only Depop is merged.
 {
   const path = freshDraft();
-  const attemptId = await beginFill(path, "depop");
+  const attemptId = await begin(path, "depop");
   await withDraftLock(path, async () => {
     const other = readDraftFile(path);
     other.publishResults = other.publishResults.map((r) => (r.platform === "ebay" ? { ...r, listingId: "l2", message: "relisted" } : r));
@@ -106,7 +137,7 @@ const isLocked = (e: unknown) => e instanceof CliError && e.code === "draft_lock
 // Mark during the wait: (a) no submit seen -> the mark stands; (b) submit seen -> unknown.
 for (const submitSeen of [false, true]) {
   const path = freshDraft();
-  const attemptId = await beginFill(path, "depop");
+  const attemptId = await begin(path, "depop");
   await withDraftLock(path, async () => {
     const marked = readDraftFile(path);
     marked.publishResults = marked.publishResults.map((r) => (r.platform === "depop" ? { platform: "depop", status: "not_posted", message: "marked not posted by Sam" } : r));
@@ -123,9 +154,9 @@ for (const submitSeen of [false, true]) {
 // Mismatched attempt id (E11): a late result from an older attempt records unknown, even a clean publish.
 {
   const path = freshDraft();
-  const older = await beginFill(path, "depop");
-  const newer = await beginFill(path, "depop");
-  assert.notStrictEqual(older, newer);
+  const older = await begin(path, "depop");
+  // A newer attempt's `filling` now owns the entry (written directly: beginFill refuses a stored `filling`).
+  await setEntry(path, { platform: "depop", status: "filling", message: "newer attempt", attemptId: "newer-attempt" });
   const out = await finishFill(path, "depop", older, depopPosted, { submitSeen: true });
   assert.strictEqual(out.recorded, true);
   assert.strictEqual(entry(path, "depop")?.status, "unknown");
@@ -135,7 +166,7 @@ for (const submitSeen of [false, true]) {
 // Lock contention at submit (C2): held past the 30 s wait -> returned as not recorded, nothing thrown, file unchanged.
 {
   const path = freshDraft();
-  const attemptId = await beginFill(path, "depop");
+  const attemptId = await begin(path, "depop");
   const before = readFileSync(path, "utf8");
   let clock = 0;
   const waited: number[] = [];
@@ -155,7 +186,7 @@ for (const submitSeen of [false, true]) {
 // The same wait succeeds when the holder lets go partway through.
 {
   const path = freshDraft();
-  const attemptId = await beginFill(path, "depop");
+  const attemptId = await begin(path, "depop");
   let clock = 0;
   writeFileSync(`${path}.lock`, JSON.stringify({ pid: process.pid, time: Date.now() }));
   const out = await finishFill(path, "depop", attemptId, depopPosted, {
@@ -210,6 +241,43 @@ for (const submitSeen of [false, true]) {
   });
   assert.deepStrictEqual(rerun.results.map((r) => r.status), ["skipped", "skipped"]);
   assert.strictEqual(rerun.complete, false, "filling reads as unknown: incomplete");
+}
+
+// Stale skip decision: Poshmark's state changes during Depop's wait, after postDraft's first read.
+// Its fill must not start, and the entry set during the wait must survive.
+for (const status of ["published", "unknown", "held"] as const) {
+  const path = freshDraft();
+  const filled: string[] = [];
+  const outcome = await postDraft({ draftPath: path, platforms: ["depop", "poshmark"] }, {
+    browserSession: {
+      fill: async (platform) => {
+        filled.push(platform);
+        if (platform === "depop") {
+          await setEntry(path, { platform: "poshmark", status, message: `marked ${status} during the Depop wait`, url: "https://poshmark.com/listing/p" });
+        }
+        return { status: "published", message: "posted", url: `https://${platform}.example/1` };
+      },
+    },
+  });
+  assert.deepStrictEqual(filled, ["depop"], `poshmark stored ${status} mid-run: no second fill`);
+  assert.deepStrictEqual(outcome.results.map((r) => [r.platform, r.status]), [["depop", "published"], ["poshmark", "skipped"]]);
+  assert.strictEqual(entry(path, "poshmark")?.status, status);
+  assert.strictEqual(entry(path, "poshmark")?.message, `marked ${status} during the Depop wait`);
+}
+
+// An error decided after the wait (here: no Poshmark listing) never overwrites a state set during the wait.
+{
+  const path = join(dir, `draft-${++n}.json`);
+  writeDraftFile(path, newDraftFile({ ...bundle, listings: bundle.listings.filter((l) => l.platform !== "poshmark") }, [join(dir, "a.jpg")]));
+  await postDraft({ draftPath: path, platforms: ["depop", "poshmark"] }, {
+    browserSession: {
+      fill: async () => {
+        await setEntry(path, { platform: "poshmark", status: "published", message: "Sam marked it posted", url: "https://poshmark.com/listing/p" });
+        return { status: "published", message: "posted", url: depopPosted.url };
+      },
+    },
+  });
+  assert.strictEqual(entry(path, "poshmark")?.status, "published", "the error result did not replace Sam's mark");
 }
 
 // postDraft with a session whose result write cannot get the lock: reported unknown, URL kept, `filling` left on disk.
