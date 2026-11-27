@@ -58,6 +58,21 @@ export interface PriceSuggestion {
   sampleSize: number;
 }
 
+// One browser-market form field. mapped=false means the tool could not fill it and Sam must.
+export interface MarketField {
+  value: string | null;
+  mapped: boolean;
+}
+
+export const DEPOP_FIELD_NAMES = ["category", "size", "brand", "condition", "color", "shipping"] as const;
+export type DepopFieldName = (typeof DEPOP_FIELD_NAMES)[number];
+export type DepopFields = Record<DepopFieldName, MarketField>;
+
+// Per-market fields, keyed by platform. Poshmark can add its own key later; eBay keeps categoryId/itemSpecifics.
+export interface MarketFields {
+  depop?: DepopFields;
+}
+
 export interface ListingDraft {
   platform: Platform;
   title: string;
@@ -67,6 +82,8 @@ export interface ListingDraft {
   // eBay-only, filled at draft time by the taxonomy step. Poshmark ignores these.
   categoryId?: string;
   itemSpecifics?: Record<string, string[]>;
+  // Depop (browser markets): form fields from the mapping step. Absent on old drafts = all unmapped.
+  marketFields?: MarketFields;
 }
 
 export interface DraftBundle {

@@ -16,6 +16,7 @@
     "outfit": "node dist/cli.js outfit",
     "status": "node dist/cli.js status",
     "gui": "node dist/cli.js gui",
+    "eval:market-fields": "npm run build && node --env-file-if-exists=.env dist/eval-market-fields.js",
     "site-api": "node --env-file-if-exists=.env dist/site-api.js",
     "desktop": "npm run build && electron .",
     "desktop:dist": "npm run build && electron-builder --publish never",

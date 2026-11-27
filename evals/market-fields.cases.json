@@ -1,0 +1,110 @@
+[
+  {
+    "name": "heels",
+    "attributes": {
+      "brand": "Zara",
+      "brandInferred": false,
+      "productName": null,
+      "category": "Heeled sandals",
+      "titleKeywords": [],
+      "size": "US 8",
+      "color": "black",
+      "material": "leather",
+      "condition": "like-new",
+      "flaws": [],
+      "dimensions": null,
+      "originalRetail": null
+    },
+    "expectedCategory": "Womenswear > Footwear > Heels"
+  },
+  {
+    "name": "mens trainers",
+    "attributes": {
+      "brand": "Nike",
+      "brandInferred": false,
+      "productName": null,
+      "category": "Men's running sneakers",
+      "titleKeywords": [],
+      "size": "US 10",
+      "color": "white",
+      "material": null,
+      "condition": "good",
+      "flaws": [],
+      "dimensions": null,
+      "originalRetail": null
+    },
+    "expectedCategory": "Menswear > Footwear > Trainers"
+  },
+  {
+    "name": "midi dress",
+    "attributes": {
+      "brand": "Reformation",
+      "brandInferred": false,
+      "productName": null,
+      "category": "Floral midi dress, women's",
+      "titleKeywords": [],
+      "size": "S",
+      "color": "blue",
+      "material": "cotton",
+      "condition": "good",
+      "flaws": [],
+      "dimensions": null,
+      "originalRetail": null
+    },
+    "expectedCategory": "Womenswear > Dresses > Midi dresses"
+  },
+  {
+    "name": "leather jacket",
+    "attributes": {
+      "brand": null,
+      "brandInferred": false,
+      "productName": null,
+      "category": "Women's leather biker jacket",
+      "titleKeywords": [],
+      "size": "M",
+      "color": "black",
+      "material": "leather",
+      "condition": "good",
+      "flaws": [],
+      "dimensions": null,
+      "originalRetail": null
+    },
+    "expectedCategory": "Womenswear > Coats and jackets > Jackets"
+  },
+  {
+    "name": "handbag",
+    "attributes": {
+      "brand": "Coach",
+      "brandInferred": false,
+      "productName": null,
+      "category": "Leather shoulder handbag, women's",
+      "titleKeywords": [],
+      "size": null,
+      "color": "brown",
+      "material": "leather",
+      "condition": "good",
+      "flaws": [],
+      "dimensions": null,
+      "originalRetail": null
+    },
+    "expectedCategory": "Womenswear > Accessories > Bags"
+  },
+  {
+    "name": "ambiguous scarf-top",
+    "attributes": {
+      "brand": null,
+      "brandInferred": false,
+      "productName": null,
+      "category": "Knit wrap piece, could be a scarf or shawl",
+      "titleKeywords": [],
+      "size": null,
+      "color": "grey",
+      "material": null,
+      "condition": "fair",
+      "flaws": [],
+      "dimensions": null,
+      "originalRetail": null
+    },
+    "expectedCategory": null
+  }
+]

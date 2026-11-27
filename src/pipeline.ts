@@ -1,6 +1,7 @@
 import { extractAttributes } from "./brain/extract.js";
 import { resolvePrice, compareByPlatform } from "./brain/price.js";
 import { generateListing } from "./brain/listing.js";
+import { mapDepopFields } from "./brain/market-fields.js";
 import { fillAspects } from "./brain/aspects.js";
 import { getActiveComps, getSoldComps } from "./ebay/browse.js";
 import { getPoshmarkComps } from "./poshmark.js";
@@ -107,6 +108,9 @@ export async function buildDraft(
       ebay.itemSpecifics = await fillAspects(attributes, await getRequiredAspects(cat.categoryId));
     }
   }
+
+  const depop = listings.find((l) => l.platform === "depop");
+  if (depop) depop.marketFields = { depop: await mapDepopFields(attributes) };
 
   return { attributes, price, comps, comparison, retail, listings };
 }
