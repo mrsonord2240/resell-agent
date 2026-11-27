@@ -229,6 +229,11 @@ function renderPage(boot: GuiBootState): string {
     .topbar { display: flex; align-items: center; justify-content: space-between; gap: 1.5rem; min-height: 78px; }
     .brand { display: flex; flex-direction: column; line-height: 1; letter-spacing: 0.01em; }
     .brand b { font-family: var(--serif); font-weight: 600; font-size: 1.32rem; color: var(--ink); letter-spacing: 0.02em; }
+    .app-nav { display: flex; gap: 0.35rem; }
+    .app-nav button { border: 1px solid transparent; background: transparent; color: var(--muted); padding: 0.55rem 0.95rem; font-size: 0.72rem; letter-spacing: 0.14em; }
+    .app-nav button:hover { color: var(--ink); border-color: var(--line); background: transparent; }
+    .app-nav button[aria-current="page"] { color: var(--ink); border-color: var(--line-dark); }
+    [data-view][hidden] { display: none !important; }
     .brand span { font-size: 0.6rem; letter-spacing: 0.34em; text-transform: uppercase; color: var(--gold-ink); margin-top: 5px; }
     main { padding: clamp(1rem, 3vw, 2rem) 0 clamp(3.5rem, 7vw, 7rem); }
     .steps { display: flex; align-items: center; gap: clamp(1rem, 4vw, 3.5rem); padding: 1rem 0 2.25rem; border-bottom: 1px solid var(--line); color: var(--muted); }
@@ -378,17 +383,21 @@ function renderPage(boot: GuiBootState): string {
         <b>resell·agent</b>
         <span>Resale, considered</span>
       </div>
+      <nav class="app-nav" aria-label="Main">
+        <button id="nav-new" type="button" data-nav="listing">New listing</button>
+        <button id="nav-drafts" type="button" data-nav="drafts">Drafts</button>
+      </nav>
     </div>
   </header>
   <main>
-    <div class="wrap">
+    <div class="wrap" data-view="listing">
       <nav class="steps" aria-label="Listing workflow">
         <span class="step is-active"><b>01</b> Read</span>
         <span class="step"><b>02</b> Consider</span>
         <span class="step"><b>03</b> Place</span>
       </nav>
     </div>
-    <div class="wrap grid">
+    <div class="wrap grid" data-view="listing">
       <section class="card">
         <span class="eyebrow">Resale, considered</span>
         <h1>Photograph the piece.<br><em>Receive the listing.</em></h1>
@@ -464,7 +473,7 @@ function renderPage(boot: GuiBootState): string {
         <div id="summary"><p class="muted">Build a draft to see pricing and comparisons.</p></div>
       </section>
     </div>
-    <div class="wrap">
+    <div class="wrap" data-view="drafts" hidden>
       <section id="drafts-panel" class="card" aria-labelledby="drafts-heading">
         <div class="drafts-head">
           <div><span class="eyebrow">Saved</span><h2 id="drafts-heading">Drafts</h2></div>
@@ -473,7 +482,7 @@ function renderPage(boot: GuiBootState): string {
         <div id="drafts-list" class="drafts-list"><p class="muted">Loading drafts...</p></div>
       </section>
     </div>
-    <div class="wrap">
+    <div class="wrap" data-view="listing">
       <section id="publish-panel" class="card" hidden>
         <span class="eyebrow">03 / Place</span>
         <h2>Review and publish</h2>

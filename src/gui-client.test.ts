@@ -33,4 +33,27 @@ for (const state of ["unknown", "filling"]) {
   assert.doesNotMatch(text, /live Depop listing/);
 }
 
+// Top navigation: one view shows at a time, and its nav button is marked current.
+{
+  const el = (view: string) => ({ dataset: { view }, hidden: false });
+  const sections = [el("listing"), el("listing"), el("drafts")];
+  const attrs: Record<string, string | null> = {};
+  const navButton = (view: string) => ({
+    dataset: { nav: view },
+    setAttribute: (name: string, value: string) => { attrs[`${view}:${name}`] = value; },
+    removeAttribute: (name: string) => { attrs[`${view}:${name}`] = null; },
+  });
+  const navs = [navButton("listing"), navButton("drafts")];
+  const fakeDocument = { querySelectorAll: (sel: string) => (sel === "[data-view]" ? sections : sel === "[data-nav]" ? navs : []) };
+  const setView = new Function("document", `${source("function setView(")}\nreturn setView;`)(fakeDocument) as (view: string) => void;
+  setView("drafts");
+  assert.deepEqual(sections.map((s) => s.hidden), [true, true, false]);
+  assert.equal(attrs["drafts:aria-current"], "page");
+  assert.equal(attrs["listing:aria-current"], null);
+  setView("listing");
+  assert.deepEqual(sections.map((s) => s.hidden), [false, false, true]);
+  assert.equal(attrs["listing:aria-current"], "page");
+  assert.equal(attrs["drafts:aria-current"], null);
+}
+
 console.log("gui-client ok");
