@@ -22,7 +22,7 @@ const draft: DraftBundle = {
   price: { suggested: 68, low: 55, high: 82, currency: "USD", basis: "test", sampleSize: 5 },
   comps: [], comparison: [], retail: [],
   listings: [
-    { platform: "ebay", title: "Patagonia Fleece", description: "d", price: 68, condition: "good", categoryId: "57988" },
+    { platform: "ebay", title: "Patagonia Fleece", description: "d", price: 68, condition: "good", categoryId: "57988", packageWeightLb: 2 },
     { platform: "depop", title: "Fleece", description: "d", price: 68, condition: "good" },
   ],
 };

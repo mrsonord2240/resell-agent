@@ -44,6 +44,13 @@ const manualPrice = mergeEditableListingFields(draft, [{ platform: "depop", pric
 assert.equal(manualPrice.listings[1].price, 0);
 assert.throws(() => mergeEditableListingFields(draft, [{ platform: "ebay", price: Number.NaN }]), /finite positive/);
 assert.throws(() => mergeEditableListingFields(draft, [{ platform: "depop", categoryId: "123" }]), /Only eBay/);
+// eBay package weight (lb) is editable; blank clears it; Depop has none.
+const weighed = mergeEditableListingFields(draft, [{ platform: "ebay", packageWeightLb: 2.5 }]);
+assert.equal(weighed.listings[0].packageWeightLb, 2.5);
+assert.equal(mergeEditableListingFields(weighed, [{ platform: "ebay", packageWeightLb: null }]).listings[0].packageWeightLb, undefined);
+assert.throws(() => mergeEditableListingFields(draft, [{ platform: "ebay", packageWeightLb: 0 }]), /package weight/);
+assert.throws(() => mergeEditableListingFields(draft, [{ platform: "ebay", packageWeightLb: "2" }]), /package weight/);
+assert.throws(() => mergeEditableListingFields(draft, [{ platform: "depop", packageWeightLb: 2 }]), /Only eBay/);
 // eBay item specifics are editable: add, change, remove a name/value. Names and values are trimmed, empty values dropped.
 const specced = mergeEditableListingFields(draft, [
   { platform: "ebay", itemSpecifics: { " Brand ": [" Example "], Size: ["M", " ", "L"], Empty: [""] } },

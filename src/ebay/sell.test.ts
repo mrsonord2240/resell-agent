@@ -26,6 +26,7 @@ const baseOpts = {
   fulfillmentPolicyId: "f",
   paymentPolicyId: "p",
   returnPolicyId: "r",
+  packageWeightLb: 2.5,
 };
 
 type Route = (url: string, init: RequestInit) => Response | undefined;
@@ -97,8 +98,10 @@ function stub(offers: unknown[], allowed: number[] | null = APPAREL): void {
     "POST /sell/inventory/v1/offer",
     "POST /sell/inventory/v1/offer/new-offer/publish",
   ]);
-  const item = bodies["PUT /sell/inventory/v1/inventory_item/resale-sku-1"] as { product: { imageUrls: string[] } };
+  const item = bodies["PUT /sell/inventory/v1/inventory_item/resale-sku-1"] as { product: { imageUrls: string[] }; packageWeightAndSize?: unknown };
   assert.deepEqual(item.product.imageUrls, ["https://i.ebayimg.com/front.jpg"]);
+  // Calculated shipping (the live policy's international option) rejects publish without it: errorId 25020.
+  assert.deepEqual(item.packageWeightAndSize, { weight: { value: 2.5, unit: "POUND" } });
 }
 
 // A published offer for the SKU is returned as-is: no upload, no second listing.

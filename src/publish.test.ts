@@ -1,7 +1,7 @@
 // Checks the publish orchestration without hitting live services.
 // Run: npm run build && node dist/publish.test.js
 import assert from "node:assert";
-import { publishDraftBundle, toEbayOptions, validateHttpsImageUrls } from "./publish.js";
+import { publishDraftBundle, toEbayOptions, validPackageWeightLb, validateHttpsImageUrls } from "./publish.js";
 import type { DraftBundle } from "./types.js";
 
 process.env.EBAY_ENV = "sandbox"; // the retry case below stores a sandbox result
@@ -26,7 +26,7 @@ const draft: DraftBundle = {
   retail: [],
   comps: [],
   listings: [
-    { platform: "ebay", title: "Patagonia Synchilla Fleece M Green", description: "Green fleece.", price: 68, condition: "good", categoryId: "57988" },
+    { platform: "ebay", title: "Patagonia Synchilla Fleece M Green", description: "Green fleece.", price: 68, condition: "good", categoryId: "57988", packageWeightLb: 2 },
     { platform: "poshmark", title: "Cozy Patagonia fleece", description: "So warm.", price: 68, condition: "good" },
     { platform: "depop", title: "Patagonia fleece", description: "Vintage-inspired.", price: 68, condition: "good" },
   ],
@@ -139,6 +139,18 @@ const fromPhotos = toEbayOptions(draft, settingsNoUrls, undefined, "", ["/tmp/ph
 assert.deepEqual(fromPhotos.imageUrls, []);
 assert.deepEqual(fromPhotos.photoPaths, ["/tmp/photo1.jpg"]);
 assert.throws(() => toEbayOptions(draft, settingsNoUrls, undefined, "", []), /photos or public HTTPS image URLs/);
+
+// eBay calculated shipping needs the package weight (errorId 25020): the draft's estimate is sent,
+// a typed weight wins, and a draft with none stops before anything reaches eBay.
+assert.equal(fromPhotos.packageWeightLb, 2);
+assert.equal(toEbayOptions(draft, { ...settingsNoUrls, packageWeightLb: 3.5 }, undefined, "", ["/tmp/photo1.jpg"]).packageWeightLb, 3.5);
+const weightless = { ...draft, listings: draft.listings.map((l) => (l.platform === "ebay" ? { ...l, packageWeightLb: undefined } : l)) };
+assert.throws(() => toEbayOptions(weightless, settingsNoUrls, undefined, "", ["/tmp/photo1.jpg"]), /package weight/);
+assert.throws(() => toEbayOptions(draft, { ...settingsNoUrls, packageWeightLb: 0 }, undefined, "", ["/tmp/photo1.jpg"]), /package weight/);
+assert.equal(validPackageWeightLb(2.25), 2.25);
+assert.equal(validPackageWeightLb("1.5"), undefined, "only numbers count");
+assert.equal(validPackageWeightLb(-1), undefined);
+assert.equal(validPackageWeightLb(500), undefined, "over eBay's 150 lb");
 
 // eBay results record the environment; a sandbox success never hides a missing production listing.
 process.env.EBAY_ENV = "production";

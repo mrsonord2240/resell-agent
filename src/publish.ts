@@ -1,6 +1,8 @@
 import { cfg } from "./config.js";
 import { publishListing, type PostOptions } from "./ebay/sell.js";
-import { GUI_PLATFORMS, stableGuiSku } from "./gui-validation.js";
+import { GUI_PLATFORMS, stableGuiSku, validPackageWeightLb } from "./gui-validation.js";
+
+export { validPackageWeightLb };
 import type { DraftBundle, ListingDraft, Platform } from "./types.js";
 
 export interface EbayPublishSettings {
@@ -8,6 +10,8 @@ export interface EbayPublishSettings {
   imageUrls: string[];
   quantity?: number;
   categoryId?: string;
+  /** Overrides the draft's estimated package weight (lb). */
+  packageWeightLb?: number;
   merchantLocationKey: string;
   fulfillmentPolicyId: string;
   paymentPolicyId: string;
@@ -176,6 +180,11 @@ export function toEbayOptions(
   }
   const category = requireText(categoryId, "eBay categoryId");
   if (!/^\d+$/.test(category)) throw new Error("eBay categoryId must be numeric.");
+  // Calculated shipping rejects a publish without it (errorId 25020), after the offer is made.
+  const packageWeightLb = validPackageWeightLb(ebay?.packageWeightLb ?? listing?.packageWeightLb);
+  if (packageWeightLb === undefined) {
+    throw new Error("eBay needs the package weight in pounds (item plus box, up to 150). Enter it on the eBay card, or pass --weight.");
+  }
 
   return {
     sku: draftId ? stableGuiSku(draftId, guiSkuPrefix) : (ebay?.sku?.trim() || `resale-${Date.now()}`),
@@ -183,6 +192,7 @@ export function toEbayOptions(
     photoPaths: imageUrls.length ? [] : photoPaths,
     quantity,
     categoryId: category,
+    packageWeightLb,
     merchantLocationKey: requireText(ebay?.merchantLocationKey, "eBay merchantLocationKey"),
     fulfillmentPolicyId: requireText(ebay?.fulfillmentPolicyId, "eBay fulfillmentPolicyId"),
     paymentPolicyId: requireText(ebay?.paymentPolicyId, "eBay paymentPolicyId"),

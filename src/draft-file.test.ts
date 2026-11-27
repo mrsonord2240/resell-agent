@@ -17,7 +17,7 @@ const bundle: DraftBundle = {
   price: { suggested: 68, low: 55, high: 82, currency: "USD", basis: "test", sampleSize: 3 },
   comps: [], comparison: [], retail: [],
   listings: [
-    { platform: "ebay", title: "Patagonia Fleece", description: "d", price: 68, condition: "good", categoryId: "57988" },
+    { platform: "ebay", title: "Patagonia Fleece", description: "d", price: 68, condition: "good", categoryId: "57988", packageWeightLb: 2 },
     { platform: "poshmark", title: "Cozy fleece", description: "d", price: 68, condition: "good" },
     { platform: "depop", title: "Fleece", description: "d", price: 68, condition: "good" },
   ],

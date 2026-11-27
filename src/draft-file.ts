@@ -352,6 +352,7 @@ export function resolveEbaySettings(
     imageUrls: pick(flags.imageUrls, saved?.imageUrls) ?? [],
     quantity: pick(flags.quantity, saved?.quantity),
     categoryId: pick(flags.categoryId, saved?.categoryId),
+    packageWeightLb: pick(flags.packageWeightLb, saved?.packageWeightLb),
     merchantLocationKey: pick(flags.merchantLocationKey, saved?.merchantLocationKey, env.GUI_DEFAULT_MERCHANT_LOCATION_KEY) ?? "",
     fulfillmentPolicyId: pick(flags.fulfillmentPolicyId, saved?.fulfillmentPolicyId, env.GUI_DEFAULT_FULFILLMENT_POLICY_ID) ?? "",
     paymentPolicyId: pick(flags.paymentPolicyId, saved?.paymentPolicyId, env.GUI_DEFAULT_PAYMENT_POLICY_ID) ?? "",

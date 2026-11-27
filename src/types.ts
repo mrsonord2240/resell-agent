@@ -12,6 +12,7 @@ export interface ItemAttributes {
   condition: "NWT" | "like-new" | "good" | "fair";
   flaws: string[];
   dimensions: string | null; // estimated size, e.g. "≈ 15 x 11 x 4 in (estimate)"
+  shippingWeightLb?: number | null; // estimated packed weight, box included; absent on old drafts
   originalRetail: number | null;
   resaleLow?: number | null;
   resaleHigh?: number | null;
@@ -82,6 +83,8 @@ export interface ListingDraft {
   // eBay-only, filled at draft time by the taxonomy step. Poshmark ignores these.
   categoryId?: string;
   itemSpecifics?: Record<string, string[]>;
+  // eBay-only: packed weight in pounds, estimated at draft time, editable. Calculated shipping needs it.
+  packageWeightLb?: number;
   // Depop (browser markets): form fields from the mapping step. Absent on old drafts = all unmapped.
   marketFields?: MarketFields;
 }

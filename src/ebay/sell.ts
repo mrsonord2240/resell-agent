@@ -89,6 +89,7 @@ export interface PostOptions {
   photoPaths?: string[];      // local photos, uploaded to eBay when imageUrls is empty
   quantity?: number;
   categoryId: string;         // eBay leaf category id
+  packageWeightLb?: number;   // packed weight; calculated shipping needs it
   merchantLocationKey: string;
   fulfillmentPolicyId: string;
   paymentPolicyId: string;
@@ -196,6 +197,7 @@ export async function publishListing(
     body: JSON.stringify({
       availability: { shipToLocationAvailability: { quantity: opts.quantity ?? 1 } },
       condition: await ebayConditionEnum(draft.condition, opts.categoryId),
+      ...(opts.packageWeightLb ? { packageWeightAndSize: { weight: { value: opts.packageWeightLb, unit: "POUND" } } } : {}),
       product: {
         title: draft.title,
         description: draft.description,

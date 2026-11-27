@@ -129,6 +129,7 @@ const COMMANDS: Record<string, CommandSpec> = {
       "--payment": "eBay: payment policy id (env GUI_DEFAULT_PAYMENT_POLICY_ID)",
       "--return": "eBay: return policy id (env GUI_DEFAULT_RETURN_POLICY_ID)",
       "--category": "eBay: category id override (default: resolved at draft time)",
+      "--weight": "eBay: package weight in lb, item plus box (default: estimated at draft time)",
       "--quantity": "eBay: quantity (default 1)",
       "--sku": "eBay: explicit SKU (default: stable per draft)",
     },
@@ -331,6 +332,7 @@ async function cmdPost() {
     paymentPolicyId: arg("--payment"),
     returnPolicyId: arg("--return"),
     categoryId: arg("--category"),
+    packageWeightLb: arg("--weight") === undefined ? undefined : Number(arg("--weight")),
     quantity: quantity === undefined ? undefined : Number(quantity),
     sku: arg("--sku"),
   };

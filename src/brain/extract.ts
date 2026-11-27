@@ -41,6 +41,11 @@ typical size, refined by its proportions against anything of known size in frame
 Use null only when size truly can't be inferred — e.g. clothing/shoe SIZING, which
 needs the garment's own label, not a visual guess. Never present an estimate as exact.
 
+For "shippingWeightLb", ESTIMATE the packed shipping weight in pounds: the item plus
+its box or mailer and packing (shoes in their shoe box, a bag with stuffing). One
+decimal, e.g. 2.5 for heels in a shoe box, 1 for a folded tee. Round up when unsure;
+the seller checks it on a scale before listing.
+
 For "resaleLow" and "resaleHigh", ALWAYS give a conservative USD secondhand asking
 range for this piece in this condition, as photographed. Integers, high above low,
 never 0. This is resale, not new retail. Wider if uncertain. originalRetail stays
@@ -59,6 +64,7 @@ Reply with ONLY a JSON object, no prose, matching this shape:
   "condition": "NWT"|"like-new"|"good"|"fair",
   "flaws": string[],
   "dimensions": string|null,
+  "shippingWeightLb": number,
   "originalRetail": number|null,
   "resaleLow": number,
   "resaleHigh": number

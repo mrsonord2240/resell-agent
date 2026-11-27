@@ -14,6 +14,7 @@ import { getGoogleVisionGuess } from "./google-vision.js";
 import { getBingVisualGuess } from "./bing-visual.js";
 import { matchBrand } from "./brandvision.js";
 import { getRetail } from "./retail.js";
+import { validPackageWeightLb } from "./publish.js";
 import type { Comp, ItemAttributes, DraftBundle, Platform } from "./types.js";
 
 type CompSource = (attributes: ItemAttributes) => Promise<Comp[]>;
@@ -102,6 +103,8 @@ export async function buildDraft(
   // needs no manual --category and buyers get eBay's search-weighted aspects.
   const ebay = listings.find((l) => l.platform === "ebay");
   if (ebay) {
+    const weight = validPackageWeightLb(attributes.shippingWeightLb);
+    if (weight !== undefined) ebay.packageWeightLb = weight;
     const cat = await suggestCategory(ebay.title);
     if (cat) {
       ebay.categoryId = cat.categoryId;

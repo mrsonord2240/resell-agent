@@ -49,6 +49,7 @@ export function renderSheet(bundle: DraftBundle, photos: string[] = []): string 
     out.push(`**Title:** ${l.title}`);
     if (l.platform === "ebay") {
       if (l.categoryId) out.push(`**Category:** ${l.categoryId}`);
+      if (l.packageWeightLb) out.push(`**Package weight:** ${l.packageWeightLb} lb (estimate; check on a scale)`);
       const specs = l.itemSpecifics ?? {};
       const keys = Object.keys(specs);
       if (keys.length) {

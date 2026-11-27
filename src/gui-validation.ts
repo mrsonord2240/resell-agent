@@ -125,6 +125,15 @@ export function mergeEditableListingFields(
       }
       listing.categoryId = categoryId;
     }
+    if (Object.hasOwn(input, "packageWeightLb")) {
+      if (input.platform !== "ebay") throw new Error("Only eBay has a package weight.");
+      if (input.packageWeightLb === null) delete listing.packageWeightLb;
+      else {
+        const weight = validPackageWeightLb(input.packageWeightLb);
+        if (weight === undefined) throw new Error("eBay package weight must be a number of pounds above 0, up to 150.");
+        listing.packageWeightLb = weight;
+      }
+    }
     if (Object.hasOwn(input, "itemSpecifics")) {
       if (input.platform !== "ebay") throw new Error("Only eBay has item specifics.");
       const specifics = editableItemSpecifics(input.itemSpecifics);
@@ -134,6 +143,11 @@ export function mergeEditableListingFields(
   }
 
   return merged;
+}
+
+/** eBay's own ceiling for a parcel is 150 lb. Anything else is not a weight. */
+export function validPackageWeightLb(value: unknown): number | undefined {
+  return typeof value === "number" && Number.isFinite(value) && value > 0 && value <= 150 ? value : undefined;
 }
 
 export function stableGuiSku(draftId: string, configuredPrefix = ""): string {

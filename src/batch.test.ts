@@ -50,7 +50,7 @@ function makeBatch(items: Record<string, Record<string, string>>): string {
 }
 
 function listing(platform: Platform): ListingDraft {
-  return { platform, title: `${platform} title`, description: "d", price: 68, condition: "good", ...(platform === "ebay" ? { categoryId: "57988" } : {}) };
+  return { platform, title: `${platform} title`, description: "d", price: 68, condition: "good", ...(platform === "ebay" ? { categoryId: "57988", packageWeightLb: 2 } : {}) };
 }
 function bundle(platforms: Platform[], over: { brandInferred?: boolean; sampleSize?: number } = {}): DraftBundle {
   return {

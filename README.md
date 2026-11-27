@@ -416,6 +416,9 @@ live: check it before retrying. `npm run status -- --draft draft.json` shows whe
 each platform stands.
 
 `--category <id>` is optional, pass it only to override the auto-resolved one.
+eBay needs a package weight (item plus box, in lb) for calculated shipping. The draft
+estimates one; check it on a scale and pass `--weight <lb>` or edit it on the GUI's
+eBay card. A draft with no weight stops before anything reaches eBay.
 eBay photos upload from the draft through eBay's Media API (the user token needs the
 `sell.inventory` scope). `--images` is optional: public HTTPS URLs used instead of uploading.
 Edit titles, descriptions or prices by editing `draft.json` before posting.
