@@ -21,6 +21,9 @@ try {
   assert.equal(response.status, 200);
   const html = await response.text();
   assert.match(html, /resell/i);
+  // Only eBay starts checked: Depop blocks automated access (403, 2026-11-27) and Poshmark fill isn't built.
+  const checked = [...html.matchAll(/name="platforms" value="(\w+)"( checked)?/g)].map((m) => `${m[1]}:${m[2] ? "on" : "off"}`);
+  assert.deepEqual(checked.sort(), ["depop:off", "ebay:on", "poshmark:off"]);
   const cookie = response.headers.get("set-cookie") ?? "";
   assert.match(cookie, /gui_token=/);
   assert.match(cookie, /HttpOnly/i);

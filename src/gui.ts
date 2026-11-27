@@ -162,7 +162,7 @@ function renderPage(boot: GuiBootState): string {
     .map(
       (platform) => `
         <label class="check">
-          <input type="checkbox" name="platforms" value="${platform}" checked>
+          <input type="checkbox" name="platforms" value="${platform}"${platform === "ebay" ? " checked" : ""}>
           <span>${labels[platform]}</span>
         </label>`
     )
