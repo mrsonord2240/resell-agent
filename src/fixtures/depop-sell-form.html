@@ -7,8 +7,9 @@
   is the session-start preflight (E14) and Sam's first live session.
 
   Category paths: Menswear > Footwear > Trainers (US sizes), Womenswear > Tops > T-shirts (letter
-  sizes), Everything else > Home > Decor (no size control). Query flags (set by the test server via
-  window.FIXTURE): state=captcha | restricted | policy | noprice.
+  sizes), Everything else > Home > Decor (no size control). Flags (set by the test server via
+  window.FIXTURE): state=captcha | restricted | policy | noprice | nopost; stay (no navigation after
+  Post); createPath (a create call the runner doesn't recognise, e.g. "/graphql").
 -->
 <html lang="en">
 <head>
@@ -63,6 +64,7 @@
   const SIZES = { Footwear: ["US 7", "US 8", "US 9", "US 10", "US 11", "US 12"], Tops: ["XS", "S", "M", "L", "XL"] };
   const BRANDS = ["Nike", "Patagonia", "Levi's", "Carhartt"];
 
+  if (FIX.state === "nopost") document.getElementById("post").remove();
   if (FIX.state === "noprice") { document.getElementById("price").remove(); document.getElementById("price-label").remove(); }
   if (FIX.state === "captcha") document.body.insertAdjacentHTML("afterbegin", '<iframe title="security challenge" src="about:blank#captcha"></iframe>');
   if (FIX.state === "restricted") document.getElementById("notices").innerHTML = '<div role="alert">Your account has been restricted. You can\'t list new items right now.</div>';
@@ -131,7 +133,7 @@
       category: chosen,
       size: document.getElementById("size")?.value ?? null,
     };
-    const res = await fetch("/api/v2/products/", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+    const res = await fetch(FIX.createPath || "/api/v2/products/", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
     const out = await res.json().catch(() => ({}));
     if (out.slug && !FIX.stay) location.href = `/products/${out.slug}/`;
   });

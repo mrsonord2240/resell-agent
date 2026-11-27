@@ -41,6 +41,8 @@ export const DEPOP = {
     brand: '[data-testid="brand__input"], [aria-label="Brand"]',
     color: '[data-testid="colour__select"], [aria-label="Colour"]',
     shipping: '[data-testid="parcel-size__radio"], input[name="parcelSize"]',
+    /** Never clicked by the tool: a click on it (by Sam) is a possible submit even when no create request is recognised. */
+    submit: '[data-testid="submit__button"], form button[type="submit"]',
     option: '[role="option"]',
   },
   halt: {
@@ -60,6 +62,8 @@ export const DEPOP = {
 type FieldName = "photos" | "title" | "description" | "price" | DepopFieldName;
 /** E14 stage 1: on a blank form, checked once at session start (a miss halts Depop). */
 export const BASE_FIELDS: readonly FieldName[] = ["photos", "title", "description", "price", "category", "condition"];
+/** The session-start check: the blank-form fields plus the Post button, whose click is the fail-safe submit signal. */
+export const PREFLIGHT_CONTROLS: readonly (FieldName | "submit")[] = [...BASE_FIELDS, "submit"];
 /** E14 stage 2: appear once a category is chosen; checked per tab (a miss is an `error` on that item). */
 export const CATEGORY_FIELDS: readonly DepopFieldName[] = ["size", "brand", "color", "shipping"];
 
@@ -131,6 +135,8 @@ export const CAPTURE_MS = 60_000;
 
 export type TabEvent =
   | { kind: "create" }
+  /** Sam clicked Post (or the form submitted). Counted even when the create call isn't recognised. */
+  | { kind: "post-clicked" }
   | { kind: "listing"; url: string }
   | { kind: "login"; url: string }
   | { kind: "left"; url: string }
@@ -151,6 +157,7 @@ export class TabWatch {
   url: string | null = null;
   outcome: TabOutcome | null = null;
   private creates = 0;
+  private postClicked = false;
   private leftTo: string | null = null;
   private readonly notes: string[] = [];
 
@@ -181,13 +188,17 @@ export class TabWatch {
         if (++this.creates === 2) this.note(SECOND_CREATE);
         this.submitAt ??= now;
         return;
+      case "post-clicked":
+        // Not a deadline start: a click Depop rejects (a missing field) leaves Sam fixing the form.
+        this.postClicked = true;
+        return;
       case "listing":
         this.submitAt ??= now;
         this.url = ev.url;
         this.done("published", "Posted on Depop by Sam; listing URL captured.", ev.url);
         return;
       case "login":
-        if (!this.submitSeen) {
+        if (!this.submitSeen && !this.postClicked) {
           this.outcome = { halt: SIGN_IN };
           return;
         }
@@ -200,6 +211,7 @@ export class TabWatch {
         return;
       case "closed":
         if (this.submitSeen) this.done("unknown", `A submit was seen, but the tab closed before the listing URL was captured. ${VERIFY}`);
+        else if (this.postClicked) this.done("unknown", `Post was clicked, but no listing-create request or listing page was seen before the tab closed. ${VERIFY}`);
         else this.done("not_posted", "Tab closed with no submit seen; the next session fills it again.");
         return;
       case "window-closed":
@@ -301,7 +313,7 @@ async function present(page: any, selector: string, waitMs = 0): Promise<boolean
 export async function missingBaseControls(page: any, waitMs = 15_000): Promise<string[]> {
   await present(page, ALL_FIELDS.photos, waitMs);
   const missing: string[] = [];
-  for (const f of BASE_FIELDS) if (!(await present(page, ALL_FIELDS[f]))) missing.push(f);
+  for (const f of PREFLIGHT_CONTROLS) if (!(await present(page, ALL_FIELDS[f]))) missing.push(f);
   return missing;
 }
 
@@ -439,6 +451,8 @@ export async function fillDepopForm(page: any, listing: ListingDraft, photoPaths
   };
 
   for (const f of BASE_FIELDS) await need(f);
+  // Without the Post button no click can be seen, and a missed submit would read as not_posted (C1).
+  if (!(await present(page, S.submit))) throw new FillError("Depop: couldn't find the Post button on the sell form.");
 
   const photos = photoPaths.slice(0, DEPOP.maxPhotos);
   if (photoPaths.length > photos.length) notes.push(`Only the first ${DEPOP.maxPhotos} of ${photoPaths.length} photos were added.`);
@@ -609,6 +623,7 @@ export async function openDepopSession(opts: DepopSessionOptions = {}): Promise<
   const ours = new Set<any>();
   const waiting = new Set<{ watch: TabWatch; wake: () => void }>();
   const closes: number[] = [];
+  let homeGone = false;
 
   const shutdown = async () => {
     if (closing) return;
@@ -681,6 +696,11 @@ export async function openDepopSession(opts: DepopSessionOptions = {}): Promise<
       );
     }
     await home.goto("about:blank").catch(() => undefined);
+    // I1: the home tab closing is the window closing too (macOS keeps Chrome running with no window, and a
+    // slow exit can lose the race with `disconnected`), so a lone filled tab closed with it reads as unknown.
+    home.on("close", () => {
+      if (!closing) homeGone = true;
+    });
     await setBanner(home, "home", "resell-agent: Depop session running. Leave this tab open; filled forms open in new tabs.", "blue");
   } catch (e) {
     await shutdown();
@@ -790,10 +810,26 @@ export async function openDepopSession(opts: DepopSessionOptions = {}): Promise<
         closes.push(at);
         // Wait a moment: closing the window closes every tab at once, and that reads as unknown (S4).
         setTimeout(() => {
-          watch.handle({ kind: isWindowClose(at, closes, disconnected, burstMs) ? "window-closed" : "closed" }, now());
+          watch.handle({ kind: isWindowClose(at, closes, disconnected || homeGone, burstMs) ? "window-closed" : "closed" }, now());
           wake();
         }, burstMs);
       });
+
+      // C1 fail-safe: a click on Post (or a form submit) is reported from the page, so a create call that
+      // doesn't match DEPOP.createRequest still makes a closed tab verify-first.
+      await page
+        .exposeBinding("__resellPost", () => {
+          watch.handle({ kind: "post-clicked" }, now());
+          wake();
+        })
+        .then(() =>
+          page.evaluate((selector: string) => {
+            const call = () => (window as any).__resellPost?.();
+            document.addEventListener("click", (e) => (e.target as Element | null)?.closest?.(selector) && call(), true);
+            document.addEventListener("submit", call, true);
+          }, DEPOP.selectors.submit)
+        )
+        .catch((e: unknown) => log(`Depop tab for ${ctx.label}: couldn't watch the Post button (${e instanceof Error ? e.message : e}).`));
 
       if (ctx.stock) {
         const show = async (b: StockBanner) => {

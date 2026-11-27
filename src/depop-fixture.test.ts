@@ -58,7 +58,7 @@ const photo = (name: string) => {
 const photos = [photo("front.png"), photo("back.png")];
 
 // ---- the local stand-in for Depop ----
-const fake = { loggedOut: false, state: "", slugless: false, createDelayMs: 0, creates: 0, n: 0 };
+const fake = { loggedOut: false, state: "", stay: false, createPath: "", slugless: false, createDelayMs: 0, creates: 0, n: 0 };
 const server = createServer((req, res) => {
   const url = new URL(req.url ?? "/", "http://fixture");
   const html = (body: string) => {
@@ -70,7 +70,7 @@ const server = createServer((req, res) => {
       res.writeHead(302, { location: "/login/?next=/products/create/" });
       return res.end();
     }
-    return html(FORM.replace("<head>", `<head><script>window.FIXTURE=${JSON.stringify({ state: fake.state })}</script>`));
+    return html(FORM.replace("<head>", `<head><script>window.FIXTURE=${JSON.stringify({ state: fake.state, stay: fake.stay, createPath: fake.createPath })}</script>`));
   }
   if (url.pathname === "/login/") {
     if (req.method === "POST") {
@@ -80,7 +80,7 @@ const server = createServer((req, res) => {
     }
     return html(`<h1>Log in</h1><button id="signin" onclick="fetch('/login/',{method:'POST'}).then(()=>location.href='/products/create/')">Sign in</button>`);
   }
-  if (req.method === "POST" && url.pathname === "/api/v2/products/") {
+  if (req.method === "POST" && (url.pathname === "/api/v2/products/" || url.pathname === "/graphql")) {
     req.resume();
     req.on("end", () => {
       fake.creates++;
@@ -263,6 +263,24 @@ try {
   fake.slugless = false;
   await t7.close();
 
+  // C1: Depop's real create call doesn't match DEPOP.createRequest and the tab stays on the form. The Post
+  // click itself is the submit signal, so Sam closing the tab is verify-first, never a re-fill.
+  fake.stay = true;
+  fake.createPath = "/graphql";
+  const pMiss = s.forItem({ label: "Missed create" }).fill("depop", trainers("Missed create"), photos);
+  const tMiss = await filledTab(sam, "Missed create");
+  const beforeMiss = fake.creates;
+  await tMiss.click("#post");
+  await until(async () => fake.creates > beforeMiss, "the unrecognised create reached the server");
+  await sleep(200);
+  assert.ok(tMiss.url().includes("/products/create/"), "the tab stayed on the sell form");
+  await tMiss.close();
+  const rMiss = await pMiss;
+  assert.strictEqual(rMiss.status, "unknown");
+  assert.match(rMiss.message, /Post was clicked/);
+  fake.stay = false;
+  fake.createPath = "";
+
   // E12: a failed pre-fill check opens the tab with "couldn't confirm"; a later re-check that finds it sold
   // puts up the red SOLD ON EBAY banner.
   const stock: StockState[] = ["sold"];
@@ -315,9 +333,34 @@ try {
   fake.state = "noprice";
   await assert.rejects(openDepopSession(options(profile)), (e: unknown) => e instanceof CliError && e.code === "depop_halted" && /couldn't find the price field/.test(e.message));
   await until(async () => !profileInUse(profile), "Chrome closed after a preflight halt");
+  // C1: no Post button means no click can be seen, so that halts at session start too.
+  fake.state = "nopost";
+  await assert.rejects(openDepopSession(options(profile)), (e: unknown) => e instanceof CliError && e.code === "depop_halted" && /couldn't find the submit field/.test(e.message));
+  await until(async () => !profileInUse(profile), "Chrome closed after a preflight halt");
   fake.state = "";
   const s2 = await openDepopSession(options(profile));
   sessions.push(s2);
+  // I1: one filled tab (`--tabs 1`, `post`, the GUI) and the window closes with it: the home tab closing in
+  // the same moment makes it the window, so unknown, even when Chrome stays up (macOS) or exits slowly.
+  const sam2 = await samConnect(s2.chrome.port);
+  const pOne = s2.forItem({ label: "Only tab" }).fill("depop", trainers("Only tab"), photos);
+  const tOne = await filledTab(sam2, "Only tab");
+  const home2 = await until(
+    async () => {
+      for (const p of pagesOf(sam2)) if (await p.evaluate(() => !!document.getElementById("resell-banner-home")).catch(() => false)) return p;
+      return null;
+    },
+    "the home tab"
+  );
+  await Promise.all([home2.close(), tOne.close()]);
+  const rOne = await pOne;
+  assert.strictEqual(rOne.status, "unknown", "window closed with a single filled tab");
+  // With the home tab already gone, a lone filled tab is the last tab of its window: closing it is unknown too.
+  const pLast = s2.forItem({ label: "Last tab" }).fill("depop", trainers("Last tab"), photos);
+  const tLast = await filledTab(sam2, "Last tab");
+  await sleep(600); // well past the close burst from the home tab
+  await tLast.close();
+  assert.strictEqual((await pLast).status, "unknown", "home gone: the tab's close may be the window's");
   fake.loggedOut = true;
   const r13 = await s2.forItem({ label: "Signed out" }).fill("depop", trainers("Signed out"), photos);
   assert.strictEqual(r13.status, "error");

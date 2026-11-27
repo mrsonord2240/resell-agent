@@ -212,6 +212,20 @@ function busyProfile(): CliError {
   );
 }
 
+/** E9: if attaching to a Chrome this runner spawned fails, that Chrome is killed, not left running with its port. */
+export async function attachOrKill<T>(child: ChildProcess | null, attach: () => Promise<T>): Promise<T> {
+  try {
+    return await attach();
+  } catch (e) {
+    if (child && child.exitCode === null) {
+      const exited = new Promise((r) => child.once("exit", r));
+      child.kill();
+      await Promise.race([exited, delay(5_000)]);
+    }
+    throw e;
+  }
+}
+
 export function chromeArgs(profileDir: string, headless = false): string[] {
   return [
     `--user-data-dir=${profileDir}`,
@@ -271,8 +285,10 @@ export async function launchOrAttachChrome(opts: ChromeOptions): Promise<ChromeH
     }
   }
 
-  const browser = await chromium.connectOverCDP(`http://127.0.0.1:${port}`);
-  const context = browser.contexts()[0] ?? (await browser.newContext());
+  const { browser, context } = await attachOrKill(child, async () => {
+    const b = await chromium.connectOverCDP(`http://127.0.0.1:${port}`);
+    return { browser: b, context: b.contexts()[0] ?? (await b.newContext()) };
+  });
   let closed = false;
   return {
     browser,

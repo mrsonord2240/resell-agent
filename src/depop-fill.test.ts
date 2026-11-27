@@ -3,7 +3,10 @@
 // Run: npm test
 import assert from "node:assert";
 import {
+  BASE_FIELDS,
   CAPTURE_MS,
+  DEPOP,
+  PREFLIGHT_CONTROLS,
   STOCK_RECHECK_MS,
   STOCK_REFOCUS_MS,
   StockWatcher,
@@ -106,6 +109,34 @@ const msg = (w: TabWatch): string => (w.outcome && "message" in w.outcome ? w.ou
   // Once resolved, later events change nothing.
   lost.handle({ kind: "listing", url: "https://www.depop.com/products/y/" }, 1);
   assert.strictEqual(st(lost), "unknown");
+}
+
+// --- C1: a Post click is a possible submit even when no create request is recognised ---
+{
+  // Sam clicks Post; the create call doesn't match DEPOP.createRequest and the tab stays on the form.
+  const t = new TabWatch();
+  t.handle({ kind: "post-clicked" }, 0);
+  t.handle({ kind: "tick" }, CAPTURE_MS * 5);
+  assert.strictEqual(st(t), null, "a click alone does not start the URL deadline: Sam may be fixing a field");
+  t.handle({ kind: "closed" }, CAPTURE_MS * 5);
+  assert.strictEqual(st(t), "unknown", "closed after a Post click is verify-first, never not_posted");
+  assert.match(msg(t), /Post was clicked/);
+  // A click, then the recognised create and the URL: published, and no false double-click warning.
+  const u = new TabWatch();
+  u.handle({ kind: "post-clicked" }, 0);
+  u.handle({ kind: "create" }, 10);
+  u.handle({ kind: "listing", url: "https://www.depop.com/products/x/" }, 20);
+  assert.strictEqual(st(u), "published");
+  assert.doesNotMatch(msg(u), /second listing-create/);
+  // A sign-in redirect after a Post click is verify-first too, not a halt.
+  const v = new TabWatch();
+  v.handle({ kind: "post-clicked" }, 0);
+  v.handle({ kind: "login", url: "https://www.depop.com/login/" }, 1);
+  v.handle({ kind: "closed" }, 2);
+  assert.strictEqual(st(v), "unknown");
+  // The session-start preflight checks the Post button too: without it no click can be seen.
+  assert.ok(DEPOP.selectors.submit, "the map has a Post-button selector");
+  assert.deepStrictEqual(PREFLIGHT_CONTROLS, [...BASE_FIELDS, "submit"]);
 }
 
 // --- One tab closed vs the window (S4) ---

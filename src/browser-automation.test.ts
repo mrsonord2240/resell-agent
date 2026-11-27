@@ -5,8 +5,10 @@ import assert from "node:assert";
 import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { spawn } from "node:child_process";
 import {
   acquireProfileLock,
+  attachOrKill,
   assertDedicatedProfile,
   chromeArgs,
   findChrome,
@@ -66,6 +68,21 @@ assert.ok(!isExpectedPlatformUrl("depop", "https://depop.com.evil.example/x"));
   (await acquireProfileLock(dir))();
   // No Chrome holds a fresh profile.
   assert.strictEqual(profileInUse(dir), false);
+}
+
+// E9: a Chrome the runner spawned is killed when attaching to it fails, not left running with its port open.
+{
+  const child = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], { stdio: "ignore" });
+  const exited = new Promise((r) => child.once("exit", r));
+  await assert.rejects(attachOrKill(child, async () => { throw new Error("connectOverCDP: socket hang up"); }), /socket hang up/);
+  await Promise.race([exited, new Promise((_, no) => setTimeout(() => no(new Error("spawned Chrome left running")), 5_000))]);
+  // Attaching fine leaves it alone.
+  const live = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], { stdio: "ignore" });
+  assert.strictEqual(await attachOrKill(live, async () => "attached"), "attached");
+  assert.strictEqual(live.exitCode, null);
+  live.kill();
+  // Attached to an already-running Chrome (no child): nothing to kill, the error passes through.
+  await assert.rejects(attachOrKill(null, async () => { throw new Error("nope"); }), /nope/);
 }
 
 console.log("browser-automation ok");

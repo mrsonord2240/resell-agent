@@ -314,8 +314,8 @@ npm run build && node dist/cli.js post-batch <dir> --markets depop [--tabs 3]
   tab waits it re-checks every 10 minutes and when you come back to the tab after 5+
   minutes, and puts up a red "SOLD ON EBAY, don't post" banner if it sold.
 - What a tab ends as is saved per item: listing URL captured is `published`; tab closed
-  with no submit is `not_posted` (filled again next run); a submit with no URL, or the
-  window closing, is `unknown` (check Depop, then `mark --posted <url>` or `--not-posted`).
+  with no submit is `not_posted` (filled again next run); a submit with no URL (a click on
+  Post counts as one), or the window closing, is `unknown` (check Depop, then `mark --posted <url>` or `--not-posted`).
 - A captcha, a policy or restriction notice, or being signed out stops the Depop session
   with the reason; nothing retries on its own. Each item's run log and any error
   screenshot are in `<item>/.resell/`.

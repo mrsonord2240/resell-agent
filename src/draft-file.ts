@@ -1,5 +1,5 @@
 // The on-disk draft the CLI writes and posts from. A DraftBundle plus what a
-// retry needs: a stable id (stable eBay SKU), the photo paths (browser flows
+// retry needs: a stable id (stable eBay SKU), the photo paths (Depop fills
 // upload them), the last eBay settings, and every platform's publish result.
 // Same retry contract as the GUI: a platform already published is skipped.
 
