@@ -1,0 +1,140 @@
+<!doctype html>
+<!--
+  SYNTHETIC FIXTURE. This is NOT a saved copy of Depop's sell form: it is hand-written, modeled on
+  its shape (photos, title, description, price, a nested category picker, condition, then
+  category-dependent size / brand / colour / parcel controls), so the fill script can be tested
+  offline. Its attributes match DEPOP.selectors in src/depop-fill.ts. The live check against Depop
+  is the session-start preflight (E14) and Sam's first live session.
+
+  Category paths: Menswear > Footwear > Trainers (US sizes), Womenswear > Tops > T-shirts (letter
+  sizes), Everything else > Home > Decor (no size control). Query flags (set by the test server via
+  window.FIXTURE): state=captcha | restricted | policy | noprice.
+-->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Sell an item | Depop (synthetic fixture)</title>
+<style>
+  body { font: 15px system-ui, sans-serif; max-width: 640px; margin: 2rem auto; }
+  label { display: block; margin-top: 1rem; font-weight: 600; }
+  [role="listbox"] { border: 1px solid #ccc; list-style: none; padding: 0; margin: 0; }
+  [role="option"] { padding: 4px 8px; cursor: pointer; }
+  [hidden] { display: none !important; }
+  .help { color: #666; font-size: 13px; }
+</style>
+</head>
+<body>
+<h1>Sell an item</h1>
+<p class="help">Listings that violate our policies may be removed. Read the seller guidelines before you post.</p>
+<div id="notices"></div>
+<form id="sell" onsubmit="return false">
+  <label>Photos <input type="file" data-testid="upload-input__input" multiple accept="image/*"></label>
+  <div id="photo-count">0 photos</div>
+  <div data-testid="photo-upload__error" role="alert" hidden></div>
+
+  <label for="title">Title</label>
+  <input id="title" data-testid="title__input" maxlength="80">
+  <label for="description">Description</label>
+  <textarea id="description" data-testid="description__input" rows="5"></textarea>
+  <label for="price" id="price-label">Price</label>
+  <input id="price" data-testid="price__input" inputmode="decimal">
+
+  <label>Category</label>
+  <button type="button" data-testid="category__select" role="combobox" aria-expanded="false">Select a category</button>
+  <ul role="listbox" id="category-menu" hidden></ul>
+
+  <label for="condition">Condition</label>
+  <select id="condition" data-testid="condition__select">
+    <option value="">Select</option>
+    <option>Brand new</option><option>Like new</option><option>Used - Excellent</option><option>Used - Good</option><option>Used - Fair</option>
+  </select>
+
+  <div id="dependent"></div>
+
+  <button type="button" data-testid="submit__button" id="post">Post</button>
+</form>
+<script>
+  const FIX = window.FIXTURE || {};
+  const TREE = {
+    "Menswear": { "Footwear": ["Trainers", "Boots"], "Tops": ["T-shirts", "Hoodies"] },
+    "Womenswear": { "Tops": ["T-shirts", "Crop tops"], "Footwear": ["Heels", "Trainers"] },
+    "Everything else": { "Home": ["Decor", "Kitchen"] },
+  };
+  const SIZES = { Footwear: ["US 7", "US 8", "US 9", "US 10", "US 11", "US 12"], Tops: ["XS", "S", "M", "L", "XL"] };
+  const BRANDS = ["Nike", "Patagonia", "Levi's", "Carhartt"];
+
+  if (FIX.state === "noprice") { document.getElementById("price").remove(); document.getElementById("price-label").remove(); }
+  if (FIX.state === "captcha") document.body.insertAdjacentHTML("afterbegin", '<iframe title="security challenge" src="about:blank#captcha"></iframe>');
+  if (FIX.state === "restricted") document.getElementById("notices").innerHTML = '<div role="alert">Your account has been restricted. You can\'t list new items right now.</div>';
+  if (FIX.state === "policy") document.getElementById("notices").innerHTML = '<div role="alert">Final warning: a listing violated our policies.</div>';
+
+  // Photos: only images are accepted; anything else shows an error (S2 "photo upload rejected").
+  const file = document.querySelector('input[type="file"]');
+  file.addEventListener("change", () => {
+    const err = document.querySelector('[data-testid="photo-upload__error"]');
+    const bad = [...file.files].filter((f) => !/^image\//.test(f.type));
+    err.hidden = !bad.length;
+    err.textContent = bad.length ? `${bad[0].name} isn't a photo. Use JPG or PNG.` : "";
+    document.getElementById("photo-count").textContent = `${file.files.length - bad.length} photos`;
+  });
+
+  // Category: a nested menu, one level at a time, like Depop's picker.
+  const catBtn = document.querySelector('[data-testid="category__select"]');
+  const menu = document.getElementById("category-menu");
+  let chosen = null;
+  function showLevel(path) {
+    const node = path.reduce((n, k) => n[k], TREE);
+    const keys = Array.isArray(node) ? node : Object.keys(node);
+    menu.innerHTML = keys.map((k) => `<li role="option">${k}</li>`).join("");
+    menu.hidden = false;
+    catBtn.setAttribute("aria-expanded", "true");
+    menu.querySelectorAll('[role="option"]').forEach((li) => li.addEventListener("click", () => {
+      const next = [...path, li.textContent];
+      if (Array.isArray(node)) { menu.hidden = true; catBtn.setAttribute("aria-expanded", "false"); choose(next); }
+      else showLevel(next);
+    }));
+  }
+  catBtn.addEventListener("click", () => showLevel([]));
+  document.addEventListener("keydown", (e) => { if (e.key === "Escape") menu.hidden = true; });
+
+  // Category-dependent controls render shortly after a category is chosen (as Depop's do).
+  function choose(path) {
+    chosen = path;
+    catBtn.textContent = path.join(" > ");
+    const dep = document.getElementById("dependent");
+    dep.innerHTML = "";
+    setTimeout(() => {
+      const sizes = SIZES[path[1]];
+      dep.innerHTML = `
+        ${sizes ? `<label for="size">Size</label><select id="size" data-testid="size__select"><option value="">Select</option>${sizes.map((s) => `<option>${s}</option>`).join("")}</select>` : ""}
+        <label for="brand">Brand</label><input id="brand" data-testid="brand__input" autocomplete="off"><ul role="listbox" id="brand-menu" hidden></ul>
+        <label for="colour">Colour</label><select id="colour" data-testid="colour__select"><option value="">Select</option><option>Black</option><option>White</option><option>Green</option><option>Blue</option></select>
+        <fieldset><legend>Parcel size</legend>
+          ${["small", "medium", "large"].map((p) => `<label><input type="radio" name="parcelSize" data-testid="parcel-size__radio" value="${p}"> ${p[0].toUpperCase() + p.slice(1)}</label>`).join("")}
+        </fieldset>`;
+      const brand = document.getElementById("brand");
+      const bmenu = document.getElementById("brand-menu");
+      brand.addEventListener("input", () => {
+        const hits = BRANDS.filter((b) => brand.value && b.toLowerCase().startsWith(brand.value.toLowerCase()));
+        bmenu.innerHTML = hits.map((b) => `<li role="option">${b}</li>`).join("");
+        bmenu.hidden = !hits.length;
+        bmenu.querySelectorAll('[role="option"]').forEach((li) => li.addEventListener("click", () => { brand.value = li.textContent; bmenu.hidden = true; }));
+      });
+    }, 150);
+  }
+
+  // Post: the listing-create request, then (on a slug) the listing page. Only Sam clicks this.
+  document.getElementById("post").addEventListener("click", async () => {
+    const body = {
+      title: document.getElementById("title").value,
+      price: document.getElementById("price")?.value,
+      category: chosen,
+      size: document.getElementById("size")?.value ?? null,
+    };
+    const res = await fetch("/api/v2/products/", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+    const out = await res.json().catch(() => ({}));
+    if (out.slug && !FIX.stay) location.href = `/products/${out.slug}/`;
+  });
+</script>
+</body>
+</html>

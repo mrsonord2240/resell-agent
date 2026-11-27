@@ -10,6 +10,9 @@ import { createHash } from "node:crypto";
 import { appendFileSync, existsSync, mkdirSync, readdirSync, readFileSync, renameSync, statSync, writeFileSync } from "node:fs";
 import { basename, join, resolve } from "node:path";
 import { unmappedFields } from "./brain/market-fields.js";
+import { cfg } from "./config.js";
+import type { DepopItemContext, StockState } from "./depop-fill.js";
+import { offerStock } from "./ebay/sell.js";
 import {
   CliError,
   draftSku,
@@ -23,6 +26,7 @@ import {
 import { buildDraft as pipelineBuildDraft } from "./pipeline.js";
 import {
   isBrowserMarket,
+  skipReason,
   type BrowserMarket,
   type BrowserSession,
   type EbayPublishSettings,
@@ -38,6 +42,8 @@ export const PHOTO_EXTENSIONS: ReadonlySet<string> = new Set([".jpg", ".jpeg", "
 export const DRAFT_FILE = "draft.json";
 export const RESELL_DIR = ".resell";
 export const BATCH_INDEX_FILE = "batch.json";
+/** E4: filled Depop tabs open at once; `--tabs N` overrides. */
+export const DEFAULT_TABS = 3;
 const MIN_PRICING_COMPS = 3;
 
 // ---------- photos, SKU id, hold rule ----------
@@ -210,6 +216,10 @@ function writeFileAtomic(path: string, text: string): void {
 /** A BrowserSession the runner owns for the whole Depop phase and closes when it ends (E2, E9). */
 export interface BatchBrowserSession extends BrowserSession {
   close(): Promise<void>;
+  /** Binds a fill to its item: the `.resell` folder for screenshots, the banner label, the eBay re-check. */
+  forItem?(ctx: DepopItemContext): BrowserSession;
+  /** Set once the market halted (S2 halt rules): no further tab is filled, nothing retries. */
+  haltReason?(): string | null;
 }
 
 export interface BatchDeps {
@@ -222,6 +232,8 @@ export interface BatchDeps {
    * Without it, a run that asks for a browser market fails with `depop_unavailable` before any work.
    */
   openBrowserSession?: () => Promise<BatchBrowserSession>;
+  /** O4, E12: the item's eBay listing state; null when it has no live eBay listing to check. Default: the eBay offer lookup. */
+  ebayStock?: (file: DraftFile) => Promise<StockState | null>;
   now?: () => Date;
 }
 
@@ -231,6 +243,8 @@ export interface BatchArgs {
   markets?: Platform[];
   /** eBay policy flags; anything missing falls back to the draft's saved settings, then GUI_DEFAULT_* env. */
   ebay?: Partial<EbayPublishSettings>;
+  /** E4: at most this many filled Depop tabs at once (default 3). */
+  tabs?: number;
 }
 
 export interface BatchItemOutcome {
@@ -251,6 +265,8 @@ export interface BatchOutcome {
   index: BatchIndex;
   /** O9: every item drafted and every requested market stored `published`. Held, unknown and error rows are incomplete. */
   complete: boolean;
+  /** Why the Depop market halted this run (S2), or why its session never opened (F5, E14); null if it didn't. */
+  halted: string | null;
 }
 
 function errorText(e: unknown): string {
@@ -324,13 +340,107 @@ async function publishItem(item: BatchItemOutcome, platforms: Platform[], args: 
   }
 }
 
+/** O4: the item's live eBay listing state, from its stored eBay offer; null when there is none here to check. */
+export async function draftEbayStock(file: DraftFile): Promise<StockState | null> {
+  const ebay = file.publishResults.find((r) => r.platform === "ebay");
+  if (ebay?.status !== "published" || !ebay.offerId) return null;
+  const env = cfg.env === "production" ? "production" : "sandbox";
+  if (ebay.env && ebay.env !== env) return null; // a sandbox listing is not stock in production
+  return offerStock(ebay.offerId);
+}
+
+export type PrefillStock =
+  | { sold: string }
+  | { stock?: () => Promise<StockState>; stockUnconfirmed?: true };
+
 /**
- * The browser phase: one session, each eligible item in turn, each fill under the short lock (E7).
- * Task 4 replaces this sequential loop with the rolling window of tabs (E4); the session and
- * per-item postDraft call stay the same.
+ * O4 before a Depop fill: a sold or ended eBay listing means no fill (`sold` carries the skip message);
+ * otherwise the re-check to run while the tab waits (E12), flagged unconfirmed when this check failed.
  */
-async function browserPhase(items: BatchItemOutcome[], markets: BrowserMarket[], session: BrowserSession, args: BatchArgs, deps: BatchDeps): Promise<void> {
-  for (const item of items) await publishItem(item, markets, args, { browserSession: session }, deps);
+export async function prefillStock(
+  results: PlatformPublishResult[],
+  market: BrowserMarket,
+  check: (results: PlatformPublishResult[]) => Promise<StockState | null> = (r) => draftEbayStock({ publishResults: r } as DraftFile)
+): Promise<PrefillStock> {
+  const recheck = () => check(results).then((s) => s ?? "active");
+  try {
+    const state = await check(results);
+    if (state === "sold" || state === "ended") return { sold: `Skipped: sold on eBay (the eBay listing is ${state}); not filled on ${market}.` };
+    return state ? { stock: recheck } : {};
+  } catch {
+    return { stock: recheck, stockUnconfirmed: true }; // the tab opens with "couldn't confirm eBay stock"
+  }
+}
+
+/** A market not filled this run (halted, or sold on eBay): reported and logged; nothing is stored. */
+function skipItem(item: BatchItemOutcome, market: BrowserMarket, message: string, deps: BatchDeps): void {
+  let stored: PublishStatus | undefined;
+  try {
+    stored = readDraftFile(item.draft).publishResults.find((r) => r.platform === market)?.status;
+  } catch {
+    stored = undefined;
+  }
+  item.results.push({ platform: market, status: "skipped", message });
+  appendRunLog(item.dir, { by: "post-batch", market, from: stored ?? "none", to: "skipped", reason: message }, (deps.now ?? (() => new Date()))());
+}
+
+function errorWithHint(e: unknown): string {
+  return e instanceof CliError && e.hint ? `${e.message} ${e.hint}` : errorText(e);
+}
+
+/**
+ * The browser phase on one session (E2) with a rolling window of `tabs` filled tabs (E4): each slot
+ * fills an item and waits for Sam; when he posts or closes it, the slot takes the next item. Each
+ * fill locks its draft only to write (E7). Before a fill, the item's eBay listing is checked (O4).
+ * Chrome starts only once an item actually needs a fill. Returns why the market halted, if it did.
+ */
+async function browserPhase(items: BatchItemOutcome[], market: BrowserMarket, args: BatchArgs, deps: BatchDeps): Promise<string | null> {
+  const check = deps.ebayStock ?? draftEbayStock;
+  let session: BatchBrowserSession | null = null;
+  let opening: Promise<BatchBrowserSession> | null = null;
+  let halted: string | null = null;
+  const queue = [...items];
+  // A held, published or verify-first market never reaches a tab: postDraft just reports the skip.
+  const noTab: BrowserSession = { fill: async () => ({ status: "error", message: `${market} was not eligible for a fill.` }) };
+
+  const one = async (item: BatchItemOutcome): Promise<void> => {
+    halted ??= session?.haltReason?.() ?? null;
+    if (halted) return skipItem(item, market, `Depop halted: ${halted} Not filled; list it by hand (Copy listing), or re-run once it's resolved.`, deps);
+    let file: DraftFile;
+    try {
+      file = readDraftFile(item.draft);
+    } catch (e) {
+      item.error = errorText(e);
+      return;
+    }
+    const stored = file.publishResults.find((r) => r.platform === market);
+    if (skipReason(market, stored) || !file.listings.some((l) => l.platform === market)) {
+      return publishItem(item, [market], args, { browserSession: noTab }, deps);
+    }
+
+    const stock = await prefillStock(file.publishResults, market, () => check(file));
+    if ("sold" in stock) return skipItem(item, market, stock.sold, deps);
+
+    try {
+      session ??= await (opening ??= deps.openBrowserSession!());
+    } catch (e) {
+      halted ??= errorWithHint(e);
+      return skipItem(item, market, `Depop halted: ${halted}`, deps);
+    }
+    const ctx: DepopItemContext = { label: item.item, logDir: join(item.dir, RESELL_DIR), ...stock };
+    await publishItem(item, [market], args, { browserSession: session.forItem?.(ctx) ?? session }, deps);
+    halted ??= session.haltReason?.() ?? null;
+  };
+
+  const slot = async () => {
+    for (let item = queue.shift(); item; item = queue.shift()) await one(item);
+  };
+  try {
+    await Promise.all(Array.from({ length: Math.min(args.tabs ?? DEFAULT_TABS, items.length) }, slot));
+  } finally {
+    await (session as BatchBrowserSession | null)?.close();
+  }
+  return halted;
 }
 
 export async function runBatch(args: BatchArgs, deps: BatchDeps = {}): Promise<BatchOutcome> {
@@ -340,6 +450,9 @@ export async function runBatch(args: BatchArgs, deps: BatchDeps = {}): Promise<B
     throw usage(`post-batch does not publish ${unsupported.join(", ")} yet.`, `Use --markets with: ${BATCH_MARKETS.join(", ")}.`);
   }
   const browserMarkets = markets.filter(isBrowserMarket);
+  if (args.tabs !== undefined && (!Number.isInteger(args.tabs) || args.tabs < 1)) {
+    throw usage(`--tabs must be a whole number of 1 or more (got ${args.tabs}).`, `Default ${DEFAULT_TABS}: ${DEFAULT_TABS} filled Depop tabs at once.`);
+  }
   if (browserMarkets.length && !deps.openBrowserSession) {
     throw new CliError(
       "depop_unavailable",
@@ -357,18 +470,14 @@ export async function runBatch(args: BatchArgs, deps: BatchDeps = {}): Promise<B
   if (markets.includes("ebay")) {
     for (const item of ready) await publishItem(item, ["ebay"], args, deps.publish ?? {}, deps);
   }
-  if (browserMarkets.length && ready.length) {
-    const session = await deps.openBrowserSession!();
-    try {
-      await browserPhase(ready, browserMarkets, session, args, deps);
-    } finally {
-      await session.close();
-    }
+  let halted: string | null = null;
+  for (const market of browserMarkets) {
+    if (ready.length) halted ??= await browserPhase(ready, market, args, deps);
   }
 
   const index = writeBatchIndex(args.dir, (deps.now ?? (() => new Date()))());
   const complete = index.items.every(
     (row) => row.intake === "drafted" && markets.every((m) => row.markets.find((r) => r.market === m)?.status === "published")
   );
-  return { dir: index.dir, markets, items, index, complete };
+  return { dir: index.dir, markets, items, index, complete, halted };
 }

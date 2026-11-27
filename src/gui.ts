@@ -5,10 +5,19 @@ import { join, resolve, sep } from "node:path";
 import { tmpdir } from "node:os";
 import { buildConsentUrl, exchangeCode } from "./ebay/auth.js";
 import { buildDraft } from "./pipeline.js";
-import { mergePublishResults, publishDraftBundle, validateHttpsImageUrls, type EbayPublishSettings, type PlatformPublishResult } from "./publish.js";
+import {
+  mergePublishResults,
+  publishDraftBundle,
+  skipReason,
+  validateHttpsImageUrls,
+  type EbayPublishSettings,
+  type FillRecorder,
+  type PlatformPublishResult,
+} from "./publish.js";
+import { prefillStock, RESELL_DIR, type PrefillStock } from "./batch.js";
+import { lazyDepopSession } from "./depop-fill.js";
 import { buildGuiScript, type GuiBootState } from "./gui-client.js";
 import { GUI_PLATFORMS, mergeEditableListingFields, validatePlatformSelection } from "./gui-validation.js";
-import { truthy } from "./env.js";
 import { applyRuntimeSettings, resetRuntimeSettings, RUNTIME_SECRET_KEYS } from "./runtime-settings.js";
 import type { DraftBundle, Platform } from "./types.js";
 
@@ -215,7 +224,6 @@ function renderPage(boot: GuiBootState): string {
     .brand { display: flex; flex-direction: column; line-height: 1; letter-spacing: 0.01em; }
     .brand b { font-family: var(--serif); font-weight: 600; font-size: 1.32rem; color: var(--ink); letter-spacing: 0.02em; }
     .brand span { font-size: 0.6rem; letter-spacing: 0.34em; text-transform: uppercase; color: var(--gold-ink); margin-top: 5px; }
-    .pill { display: inline-flex; align-items: center; gap: 0.45rem; padding: 0.45rem 0.75rem; border: 1px solid var(--line); border-radius: var(--radius); color: var(--gold-ink); background: var(--surface); font-size: 0.74rem; letter-spacing: 0.1em; text-transform: uppercase; }
     main { padding: clamp(1rem, 3vw, 2rem) 0 clamp(3.5rem, 7vw, 7rem); }
     .steps { display: flex; align-items: center; gap: clamp(1rem, 4vw, 3.5rem); padding: 1rem 0 2.25rem; border-bottom: 1px solid var(--line); color: var(--muted); }
     .step { display: inline-flex; align-items: center; gap: 0.6rem; font-size: 0.72rem; font-weight: 600; letter-spacing: 0.14em; text-transform: uppercase; }
@@ -339,7 +347,6 @@ function renderPage(boot: GuiBootState): string {
         <b>resell·agent</b>
         <span>Resale, considered</span>
       </div>
-      <div class="pill">Browser automation: ${boot.browserAutomationEnabled ? "enabled" : "disabled"}</div>
     </div>
   </header>
   <main>
@@ -856,6 +863,25 @@ async function handleDraftEdit(req: IncomingMessage, draftId: string, res: Serve
   sendJson(res, 200, serializedRecord(record));
 }
 
+/** A GUI Depop fill writes `filling` before its tab waits, so a GUI that dies mid-wait leaves verify-first, not a re-fill. */
+function guiFillRecorder(record: DraftRecord): FillRecorder {
+  return {
+    async begin(platform) {
+      const stored = record.publishResults.find((r) => r.platform === platform);
+      const skip = skipReason(platform, stored);
+      if (skip) return { skipped: { ...stored!, status: "skipped", message: skip } };
+      const attemptId = randomUUID();
+      record.publishResults = mergePublishResults(record.publishResults, [
+        { platform, status: "filling", message: `${platform} tab filled; waiting for Post.`, attemptId },
+      ]);
+      await persistDraft(record);
+      return { attemptId };
+    },
+    // handlePublish merges every result once the run ends.
+    finish: async (_platform, _attemptId, result) => result,
+  };
+}
+
 async function handlePublish(req: IncomingMessage, boot: GuiBootState, res: ServerResponse): Promise<void> {
   const body = await parseJsonBody(req);
   applyGuiRuntimeSettings(body.settings);
@@ -884,23 +910,35 @@ async function handlePublish(req: IncomingMessage, boot: GuiBootState, res: Serv
     record.updatedAt = new Date().toISOString();
     await persistDraft(record);
 
-    const result = await publishDraftBundle({
-      draft: record.draft,
-      photoPaths: record.photoPaths,
-      platforms,
-      ebay,
-      draftId,
-      guiSkuPrefix: record.guiSkuPrefix,
-      previousResults: record.publishResults,
-      browser: { headless: !truthy(process.env.BROWSER_AUTOMATION_HEADFUL) },
-    });
+    // Depop: O4 eBay check first (sold or ended is skipped), then one assisted-fill tab that waits for Sam's Post.
+    let stock: PrefillStock = {};
+    if (platforms.includes("depop") && !skipReason("depop", record.publishResults.find((r) => r.platform === "depop"))) {
+      stock = await prefillStock(record.publishResults, "depop");
+    }
+    const sold = "sold" in stock ? stock.sold : null;
+    const targets = sold ? platforms.filter((p) => p !== "depop") : platforms;
+    const depop = lazyDepopSession({ logDir: join(DATA_DIR, draftId, RESELL_DIR), ...("sold" in stock ? {} : stock) });
+    const result = targets.length
+      ? await publishDraftBundle(
+          {
+            draft: record.draft,
+            photoPaths: record.photoPaths,
+            platforms: targets,
+            ebay,
+            draftId,
+            guiSkuPrefix: record.guiSkuPrefix,
+            previousResults: record.publishResults,
+          },
+          { browserSession: depop.session, fillRecorder: guiFillRecorder(record) }
+        ).finally(depop.close)
+      : { results: [] as PlatformPublishResult[] };
+    if (sold) result.results.push({ platform: "depop", status: "skipped", message: sold });
     record.publishResults = mergePublishResults(record.publishResults, result.results);
     record.updatedAt = new Date().toISOString();
     await persistDraft(record);
     sendJson(res, 200, {
       results: result.results,
       publishResults: record.publishResults,
-      browserAutomationEnabled: boot.browserAutomationEnabled,
     });
   } finally {
     activePublishes.delete(draftId);
@@ -937,7 +975,6 @@ async function handleDraftPhoto(res: ServerResponse, draftId: string, indexStr: 
 function bootState(): GuiBootState {
   return {
     platforms: [...GUI_PLATFORMS],
-    browserAutomationEnabled: truthy(process.env.ENABLE_BROWSER_AUTOMATION),
     ebayDefaults: {
       sku: process.env.GUI_DEFAULT_SKU ?? "",
       merchantLocationKey: process.env.GUI_DEFAULT_MERCHANT_LOCATION_KEY ?? "",
@@ -1047,7 +1084,7 @@ export async function startGui(port = Number(process.env.GUI_PORT ?? "3000")): P
       }
 
       if (method === "GET" && url.pathname === "/api/health") {
-        sendJson(res, 200, { ok: true, browserAutomationEnabled: boot.browserAutomationEnabled, drafts: drafts.size });
+        sendJson(res, 200, { ok: true, drafts: drafts.size });
         return;
       }
       if (method === "POST" && url.pathname === "/api/settings/clear") {

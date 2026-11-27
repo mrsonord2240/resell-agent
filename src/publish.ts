@@ -1,6 +1,5 @@
 import { cfg } from "./config.js";
 import { publishListing, type PostOptions } from "./ebay/sell.js";
-import { publishViaBrowser, type BrowserAutomationOptions, type BrowserPublishResult } from "./browser-automation.js";
 import { GUI_PLATFORMS, stableGuiSku } from "./gui-validation.js";
 import type { DraftBundle, ListingDraft, Platform } from "./types.js";
 
@@ -20,7 +19,6 @@ export interface PublishRunOptions {
   photoPaths: string[];
   platforms?: Platform[];
   ebay?: EbayPublishSettings;
-  browser?: BrowserAutomationOptions;
   /** Set by the GUI so retries use the same SKU and persisted result state. */
   draftId?: string;
   guiSkuPrefix?: string;
@@ -56,9 +54,12 @@ export interface PublishRunResult {
 
 export type BrowserMarket = Exclude<Platform, "ebay">;
 
-/** What a filled tab ended as. `published` and `unknown` mean a submit was seen; `not_posted` means none. */
+/**
+ * What a filled tab ended as. `published` and `unknown` mean a submit was seen; `not_posted` means none;
+ * `error` means the fill failed before any submit could happen (so the message is never read as "maybe posted").
+ */
 export interface BrowserFillOutcome {
-  status: "published" | "unknown" | "not_posted";
+  status: "published" | "unknown" | "not_posted" | "error";
   message: string;
   url?: string;
 }
@@ -81,8 +82,7 @@ export interface FillRecorder {
 
 export interface PublishDeps {
   publishEbay?: typeof publishListing;
-  /** The legacy one-shot browser path, used only when no `browserSession` is passed. */
-  publishBrowser?: typeof publishViaBrowser;
+  /** Depop fills run only in a session (assisted fill: Sam clicks Post). Without one, Depop is an `error`. */
   browserSession?: BrowserSession;
   fillRecorder?: FillRecorder;
 }
@@ -272,12 +272,25 @@ async function fillInSession(
   return recorder.finish(platform, attemptId, result, { submitSeen: result.status === "published" || result.status === "unknown" });
 }
 
+/** Depop through the runner's session; Poshmark has no fill script in this cut (D1). */
+async function browserResult(platform: BrowserMarket, listing: ListingDraft, photoPaths: string[], deps: PublishDeps): Promise<PlatformPublishResult> {
+  if (platform === "poshmark") {
+    return { platform, status: "error", message: "Poshmark assisted fill isn't built yet; use Copy listing and post it by hand." };
+  }
+  if (!deps.browserSession) {
+    return { platform, status: "error", message: `${platform} fills run in a posting session: \`resell post-batch <dir> --markets depop\`, \`resell post\`, or the GUI.` };
+  }
+  if (!photoPaths.length) {
+    return { platform, status: "error", message: `Browser publishing for ${platform} needs the uploaded photo files from the draft step.` };
+  }
+  return fillInSession(deps.browserSession, deps.fillRecorder, platform, listing, photoPaths);
+}
+
 export async function publishDraftBundle(
   opts: PublishRunOptions,
   deps: PublishDeps = {}
 ): Promise<PublishRunResult> {
   const publishEbay = deps.publishEbay ?? publishListing;
-  const publishBrowser = deps.publishBrowser ?? publishViaBrowser;
   const targets = selectedPlatforms(opts.platforms, opts.draft);
   const results: PlatformPublishResult[] = [];
   const previous = new Map((opts.previousResults ?? []).map((result) => [result.platform, result]));
@@ -311,12 +324,8 @@ export async function publishDraftBundle(
       continue;
     }
 
-    if (isBrowserMarket(platform) && deps.browserSession) {
-      results.push(
-        opts.photoPaths.length
-          ? await fillInSession(deps.browserSession, deps.fillRecorder, platform, listing, opts.photoPaths)
-          : { platform, status: "error", message: `Browser publishing for ${platform} needs the uploaded photo files from the draft step.` }
-      );
+    if (isBrowserMarket(platform)) {
+      results.push(await browserResult(platform, listing, opts.photoPaths, deps));
       continue;
     }
 
@@ -336,23 +345,6 @@ export async function publishDraftBundle(
           offerId: published.offerId,
           listingId: published.listingId,
           env: ebayEnv,
-        });
-      } else {
-        if (!opts.photoPaths.length) {
-          throw new Error(`Browser publishing for ${platform} needs the uploaded photo files from the draft step.`);
-        }
-        externalPublishAttempted = true;
-        const browserResult: BrowserPublishResult = await publishBrowser(
-          platform as Exclude<Platform, "ebay">,
-          listing,
-          opts.photoPaths,
-          opts.browser
-        );
-        results.push({
-          platform,
-          status: browserResult.status === "unknown" ? "unknown" : "published",
-          message: browserResult.message,
-          url: browserResult.url,
         });
       }
     } catch (error) {

@@ -96,6 +96,7 @@ function fakes(opts: { brandInferred?: boolean; sampleSize?: number; ebayThrows?
       },
     },
     openBrowserSession: async () => session,
+    ebayStock: async () => "active", // O4 check: still for sale (no eBay call in tests)
   };
   return { deps, drafted, ebay, fills, closed: () => closed };
 }
@@ -304,7 +305,7 @@ await assert.rejects(runBatch({ dir: makeBatch({}) }, fakes().deps), isCode("usa
 
   // (2) The Depop runner is killed mid-wait: `filling` on disk and its lock left behind by a dead pid.
   await beginFill(draft, "depop");
-  const dead = spawnSync(process.execPath, ["-e", ""]).pid;
+  const dead = 2_147_483_644; // no real pid: an exited child's pid can be reused on Windows while Chrome tests run alongside
   writeFileSync(`${draft}.lock`, JSON.stringify({ pid: dead, time: Date.now() }));
   const resumed = await runBatch({ dir, markets: ["depop"] }, ok.deps);
   assert.strictEqual(ok.fills.length, 0, "a stale filling is never re-filled (it reads as unknown)");
@@ -350,7 +351,9 @@ await assert.rejects(runBatch({ dir: makeBatch({}) }, fakes().deps), isCode("usa
   const cli = fileURLToPath(new URL("./cli.js", import.meta.url));
   const cwd = mkdtempSync(join(tmpdir(), "resell-batch-cli-"));
   const run = (...args: string[]) => {
-    const r = spawnSync(process.execPath, [cli, ...args, "--json"], { cwd, encoding: "utf8" });
+    // Never a real Chrome or the real Depop profile from a test: a missing CHROME_PATH and a temp profile root.
+    const env = { ...process.env, CHROME_PATH: join(cwd, "no-chrome.exe"), BROWSER_AUTOMATION_PROFILE_DIR: join(cwd, "profiles") };
+    const r = spawnSync(process.execPath, [cli, ...args, "--json"], { cwd, encoding: "utf8", env });
     return { code: r.status, env: JSON.parse(r.stdout) };
   };
 
@@ -376,9 +379,24 @@ await assert.rejects(runBatch({ dir: makeBatch({}) }, fakes().deps), isCode("usa
   assert.strictEqual(night.env.error.code, "publish_incomplete");
   assert.strictEqual(night.env.data.items[0].results[0].status, "skipped");
 
+  // A held draft never starts Chrome: nothing to fill, so CHROME_PATH is never looked at.
   const depop = run("post-batch", dir, "--markets", "depop");
-  assert.strictEqual(depop.code, 2);
-  assert.strictEqual(depop.env.error.code, "depop_unavailable");
+  assert.strictEqual(depop.code, 3);
+  assert.strictEqual(depop.env.error.code, "publish_incomplete");
+  assert.strictEqual(depop.env.data.halted, null);
+  assert.strictEqual(run("post-batch", dir, "--markets", "depop", "--tabs", "0").code, 2, "--tabs 0 is a usage error");
+
+  // F5: a fillable item with no Chrome halts Depop up front with the fix, and nothing is written.
+  const shoes = makeBatch({ shoes: { "1.jpg": "shoes" } });
+  const shoesDraft = join(shoes, "shoes", "draft.json");
+  writeDraftFile(shoesDraft, { ...bundle(["ebay", "depop"]), draftId: "d2", photos: [join(shoes, "shoes", "1.jpg")], publishResults: [] });
+  const noChrome = run("post-batch", shoes, "--markets", "depop");
+  assert.strictEqual(noChrome.code, 3);
+  assert.match(noChrome.env.data.halted, /CHROME_PATH/);
+  assert.deepStrictEqual(readDraftFile(shoesDraft).publishResults, [], "no `filling` before Chrome is found");
+  const post = run("post", "--draft", shoesDraft, "--platforms", "depop");
+  assert.strictEqual(post.code, 3);
+  assert.match(post.env.data.results[0].message, /Depop session didn't start: CHROME_PATH/);
 
   const st = run("status", "--batch", dir);
   assert.strictEqual(st.code, 0);

@@ -153,6 +153,19 @@ async function acquireDraftLock(lock: string, opts: DraftLockOptions): Promise<b
   }
 }
 
+/** The same pid-and-time lock for any file (the Depop profile's one-runner lock): true when acquired. */
+export function acquireLockFile(lock: string, opts: DraftLockOptions = {}): Promise<boolean> {
+  return acquireDraftLock(lock, opts);
+}
+
+export function releaseLockFile(lock: string): void {
+  try {
+    unlinkSync(lock);
+  } catch {
+    /* already gone */
+  }
+}
+
 /** One writer per draft at a time, across processes (two agents, agent + retry, or a fill + `mark`). */
 export async function withDraftLock<T>(path: string, fn: () => Promise<T>, opts: DraftLockOptions = {}): Promise<T> {
   const lock = `${path}.lock`;
@@ -166,11 +179,7 @@ export async function withDraftLock<T>(path: string, fn: () => Promise<T>, opts:
   try {
     return await fn();
   } finally {
-    try {
-      unlinkSync(lock);
-    } catch {
-      /* already gone */
-    }
+    releaseLockFile(lock);
   }
 }
 
@@ -287,7 +296,6 @@ export interface PostArgs {
   platforms?: Platform[];
   /** Flag values; anything missing falls back to the draft's last settings, then GUI_DEFAULT_* env. */
   ebay?: Partial<EbayPublishSettings>;
-  headful?: boolean;
   /** Lock-wait pacing for session fills; tests inject a clock. */
   fillLock?: DraftLockOptions;
 }
@@ -331,7 +339,7 @@ export function draftSku(file: DraftFile, prefix = process.env.GUI_DEFAULT_SKU ?
   return file.ebay?.sku?.trim() || stableGuiSku(file.draftId, prefix);
 }
 
-function runPublish(file: DraftFile, platforms: Platform[], ebay: EbayPublishSettings | undefined, args: PostArgs, deps: PublishDeps) {
+function runPublish(file: DraftFile, platforms: Platform[], ebay: EbayPublishSettings | undefined, deps: PublishDeps) {
   return publishDraftBundle(
     {
       draft: file,
@@ -342,7 +350,6 @@ function runPublish(file: DraftFile, platforms: Platform[], ebay: EbayPublishSet
       draftId: ebay?.sku ? undefined : file.draftId,
       guiSkuPrefix: process.env.GUI_DEFAULT_SKU ?? "",
       previousResults: file.publishResults,
-      browser: { headless: !args.headful },
     },
     deps
   );
@@ -366,7 +373,7 @@ export async function postDraft(args: PostArgs, deps: PublishDeps = {}): Promise
     writeDraftFile(args.draftPath, file);
 
     const now = session ? platforms.filter((p) => !isBrowserMarket(p)) : platforms;
-    const run = now.length ? (await runPublish(file, now, ebay, args, deps)).results : [];
+    const run = now.length ? (await runPublish(file, now, ebay, deps)).results : [];
     file.publishResults = mergePublishResults(file.publishResults, run);
     writeDraftFile(args.draftPath, file);
     return { file, platforms, ebay, results: run };
@@ -377,7 +384,7 @@ export async function postDraft(args: PostArgs, deps: PublishDeps = {}): Promise
   const results = [...locked.results];
   const waiting = session ? platforms.filter(isBrowserMarket) : [];
   if (waiting.length) {
-    const run = await runPublish(file, waiting, ebay, args, { ...deps, fillRecorder: draftFillRecorder(args.draftPath, args.fillLock) });
+    const run = await runPublish(file, waiting, ebay, { ...deps, fillRecorder: draftFillRecorder(args.draftPath, args.fillLock) });
     results.push(...run.results);
     // Fills recorded their own results. The rest (no listing, no photos, a failed begin, skips) merge into
     // the latest file, but never over a state set since the first read that a re-run must honor (the same

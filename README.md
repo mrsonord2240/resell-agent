@@ -13,12 +13,13 @@ Two halves:
   comparison. Only eBay is a sanctioned API, the rest are opt-in, ToS-risky
   scrapers, off unless you set their `ENABLE_*` flag. The suggested price stays
   eBay-anchored, since that's where `post` lists.
-- **Hands** (eBay API + browser-flow adapters): publishes a real listing via the eBay
-  Sell API and can route configured browser-assisted platforms through the GUI.
+- **Hands** (eBay API + Depop assisted fill): publishes a real listing via the eBay
+  Sell API, and opens Depop's sell form filled in your own Chrome for you to post.
 
 Poshmark and Depop have no public API. The tool writes you ready-to-paste listing
-blocks for both, and browser-assisted posting is opt-in through the GUI when you
-configure it. The optional Poshmark *price* source above only reads asking prices
+blocks for both. For Depop it can also fill the sell form in a Chrome tab and wait
+while you review it and click Post yourself (see "Depop assisted fill" below).
+Poshmark assisted fill isn't built yet. The optional Poshmark *price* source above only reads asking prices
 for comparison, and carries the same risk, hence off by default.
 
 ## Why
@@ -207,8 +208,8 @@ npm run gui
 Starts a local review-and-publish dashboard on `http://127.0.0.1:3000` (the
 printed port follows `GUI_PORT`). Upload photos, enter notes, choose the
 platforms, build a draft, edit the copy, then click **Publish all**. eBay
-publishes through the API; the browser-automation hooks for Poshmark and Depop
-are enabled only when configured. If eBay is unchecked, the pipeline skips eBay
+publishes through the API; Depop opens its sell form filled in Chrome and waits for
+you to click Post (see "Depop assisted fill"). If eBay is unchecked, the pipeline skips eBay
 active and sold comps and the review becomes copy/paste mode: set a manual price
 and use each listing's **Copy listing** button. The GUI binds to loopback by default. A
 `GUI_HOST` override is ignored unless `GUI_ALLOW_REMOTE=1` is explicitly set.
@@ -228,8 +229,9 @@ include `.env`; use the in-app Settings panel, or put a `.env` in the app data
 folder (`~/Library/Application Support/Resell Agent/` on macOS,
 `%APPDATA%\Resell Agent\` on Windows). Native modules such as `sharp` are built
 per OS, so a Windows `.exe` should be produced on Windows (or CI), not copied
-out of a Mac build. The packaged app keeps draft/publish and eBay API posting;
-it does not bundle Playwright, background removal, or local CLIP brand matching.
+out of a Mac build. The packaged app keeps draft/publish, eBay API posting and
+Depop assisted fill (it ships `playwright-core` and drives your installed Chrome, so no
+browser is bundled); it does not bundle background removal or local CLIP brand matching.
 
 The page receives a private, HttpOnly per-process session cookie automatically;
 there is no token to type into the normal local URL. API and photo routes reject
@@ -281,8 +283,8 @@ least one of `ebay`, `poshmark`, or `depop`. eBay uploads the draft's photos thr
 eBay's Media API; pasted image URLs are optional and must be public HTTPS URLs. GUI eBay SKUs are stable for a draft
 (derived from its draft ID), successful platform results are persisted, and a
 retry skips those successful targets. The UI reports all/some/none explicitly;
-failed and unknown results remain visible. A browser submit timeout is marked
-possibly published and must be checked before retrying to avoid duplicates.
+failed and unknown results remain visible. A Depop tab where a submit was seen
+but no listing URL was captured is `unknown`: check it before retrying to avoid duplicates.
 
 Useful GUI defaults are `GUI_DEFAULT_SKU` (an optional stable SKU prefix),
 `GUI_DEFAULT_MERCHANT_LOCATION_KEY`, `GUI_DEFAULT_FULFILLMENT_POLICY_ID`,
@@ -290,37 +292,36 @@ Useful GUI defaults are `GUI_DEFAULT_SKU` (an optional stable SKU prefix),
 `.env`. Do not expose the GUI remotely unless you
 understand the risk and deliberately opt in.
 
-### Optional browser-assisted flows
+### Depop assisted fill
 
-Poshmark and Depop do not provide a public posting API in this project. Browser
-posting is off unless `ENABLE_BROWSER_AUTOMATION=1` and a per-platform JSON flow
-are configured. Install the browser binary once with:
+Depop has no posting API, so the tool fills the sell form and you click Post:
 
 ```
-npx playwright install chromium
+npm run build && node dist/cli.js post-batch <dir> --markets depop [--tabs 3]
 ```
 
-Set `POSHMARK_BROWSER_FLOW` and/or `DEPOP_BROWSER_FLOW` (the aliases
-`BROWSER_FLOW_POSHMARK` and `BROWSER_FLOW_DEPOP` also work) to JSON shaped like:
+- It starts your installed Google Chrome with its own profile,
+  `%LOCALAPPDATA%\resell-agent\profiles\depop` (macOS: `~/Library/Application Support/resell-agent/profiles/depop`;
+  `BROWSER_AUTOMATION_PROFILE_DIR` moves the root). It never uses your everyday
+  Chrome profile. The first time, sign in to Depop in that window; the session
+  continues once the sell form loads.
+- Chrome listens on a random debug port on 127.0.0.1 only while the session runs, and
+  the session closes that Chrome when it ends. If Chrome isn't found, install it or set
+  `CHROME_PATH`. If that profile's Chrome is already open without the port, close it and re-run.
+- Up to 3 filled tabs are open at once (`--tabs N`); the next item fills when you post
+  or close one. Fields the tool couldn't map are outlined in the tab and named in its banner.
+- Before each fill it checks the item's eBay listing: sold or ended is skipped. While a
+  tab waits it re-checks every 10 minutes and when you come back to the tab after 5+
+  minutes, and puts up a red "SOLD ON EBAY, don't post" banner if it sold.
+- What a tab ends as is saved per item: listing URL captured is `published`; tab closed
+  with no submit is `not_posted` (filled again next run); a submit with no URL, or the
+  window closing, is `unknown` (check Depop, then `mark --posted <url>` or `--not-posted`).
+- A captcha, a policy or restriction notice, or being signed out stops the Depop session
+  with the reason; nothing retries on its own. Each item's run log and any error
+  screenshot are in `<item>/.resell/`.
 
-```json
-{
-  "url": "https://poshmark.com/your-configured-page",
-  "titleSelector": "your selector",
-  "descriptionSelector": "your selector",
-  "priceSelector": "your selector",
-  "imageInputSelector": "input[type=file]",
-  "publishSelector": "your selector",
-  "successSelector": "your configured success marker"
-}
-```
-
-Use `successUrlIncludes` instead of `successSelector` when that is the reliable
-verification signal. The configured start and absolute success URLs must stay
-on the expected HTTPS `poshmark.com` or `depop.com` domain. Selectors change
-with the sites and are not hardcoded here; the flow does not submit credentials.
-Use a persistent Playwright profile only for an account you control, and check
-each platform's rules before automating posting.
+`ENABLE_BROWSER_AUTOMATION` and the `*_BROWSER_FLOW` JSON flows are gone; a leftover
+value in `.env` is ignored.
 
 ### The reference library
 
@@ -339,7 +340,7 @@ npm run post -- --draft draft.json --platforms ebay,poshmark,depop \
 ```
 
 `post` runs the same publish engine as the GUI's **Publish all**: eBay through the
-Sell API, Poshmark and Depop through the configured browser flows. Each platform's
+Sell API, Depop through one assisted-fill tab (Poshmark isn't built yet). Each platform's
 result is saved back into `draft.json`, so re-running `post` retries only what
 failed. eBay settings are saved too, and the four eBay IDs fall back to the
 `GUI_DEFAULT_*` values in `.env`. A platform reported `unknown` may already be
@@ -408,8 +409,9 @@ logging goes to stderr. Call `node dist/cli.js <command> --json` directly (it lo
   (`src/ebay/taxonomy.ts` + `src/brain/aspects.ts`). Best-effort: if eBay can't suggest
   a category, the draft still builds and you pass `--category` on `post`.
 - All the publish routing lives in `src/publish.ts`: eBay uses the API path in
-  `src/ebay/sell.ts`, while non-eBay targets go through the browser-flow adapters in
-  `src/browser-automation.ts` when configured.
+  `src/ebay/sell.ts`; Depop fills run in a session from `src/depop-fill.ts` (the form
+  script, its selector map and submit detection) on the Chrome that
+  `src/browser-automation.ts` starts or attaches to.
 - The brain modules only depend on the Anthropic client, so you can reuse them headless.
 
 ## Layout
@@ -422,8 +424,9 @@ src/
   draft-file.ts     draft.json: stable id, photos, saved publish results, post lock
   load-env.ts       loads ./.env for the CLI
   gui.ts            local dashboard: draft review + publish orchestration
-  publish.ts        publish routing: eBay API + browser-flow adapters
-  browser-automation.ts  optional Playwright flows for non-API platforms
+  publish.ts        publish routing: eBay API + Depop session
+  depop-fill.ts     Depop sell-form script, selector map, submit detection, session
+  browser-automation.ts  installed Chrome on a dedicated profile, over CDP
   gui-validation.ts  GUI boundary validation, editable-field merge, stable SKU
   env.ts            shared truthy environment-flag parser
   pipeline.ts       photos -> priced listings
@@ -447,4 +450,4 @@ src/
 - Marketplace Insights for real sold comps
 - Batch mode: a folder of items in, many drafts out
 - Poshmark read-only comps via a scraper, for cross-platform pricing
-- Platform-specific browser flows with maintained selectors and verified outcomes
+- Poshmark assisted fill on the same contract as Depop

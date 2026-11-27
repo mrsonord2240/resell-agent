@@ -244,7 +244,8 @@ for (const submitSeen of [false, true]) {
 }
 
 // Stale skip decision: Poshmark's state changes during Depop's wait, after postDraft's first read.
-// Its fill must not start, and the entry set during the wait must survive.
+// It is never filled (no Poshmark fill script in this cut, D1), and the entry set during the wait survives
+// the not-built error decided after the wait.
 for (const status of ["published", "unknown", "held"] as const) {
   const path = freshDraft();
   const filled: string[] = [];
@@ -260,7 +261,7 @@ for (const status of ["published", "unknown", "held"] as const) {
     },
   });
   assert.deepStrictEqual(filled, ["depop"], `poshmark stored ${status} mid-run: no second fill`);
-  assert.deepStrictEqual(outcome.results.map((r) => [r.platform, r.status]), [["depop", "published"], ["poshmark", "skipped"]]);
+  assert.deepStrictEqual(outcome.results.map((r) => [r.platform, r.status]), [["depop", "published"], ["poshmark", "error"]]);
   assert.strictEqual(entry(path, "poshmark")?.status, status);
   assert.strictEqual(entry(path, "poshmark")?.message, `marked ${status} during the Depop wait`);
 }

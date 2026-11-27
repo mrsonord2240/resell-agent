@@ -44,9 +44,6 @@ async function runOnce(platform: Platform, prior: PlatformPublishResult | undefi
         attempted.push("ebay");
         return { offerId: "o", listingId: "l" };
       },
-      publishBrowser: async () => {
-        throw new Error("the legacy browser path must not run when a session is passed");
-      },
       browserSession: session,
     }
   );

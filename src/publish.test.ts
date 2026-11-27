@@ -52,18 +52,31 @@ const result = await publishDraftBundle(
       calls.push(`ebay:${listing.platform}:${opts.categoryId}`);
       return { offerId: "offer-1", listingId: "listing-1" };
     },
-    publishBrowser: async (platform, listing) => {
-      calls.push(`browser:${platform}:${listing.platform}`);
-      return { message: `${platform} done`, url: `https://${platform}.example.com/listing/1` };
+    browserSession: {
+      fill: async (platform, listing) => {
+        calls.push(`browser:${platform}:${listing.platform}`);
+        return { status: "published", message: `${platform} done`, url: `https://www.depop.com/products/1/` };
+      },
     },
   }
 );
 
-assert.deepEqual(calls, ["ebay:ebay:57988", "browser:poshmark:poshmark", "browser:depop:depop"]);
+// Poshmark has no fill script in this cut (D1): a clear error, and the session is never asked.
+assert.deepEqual(calls, ["ebay:ebay:57988", "browser:depop:depop"]);
 assert.equal(result.results.length, 3);
 assert.equal(result.results[0].status, "published");
-assert.equal(result.results[1].status, "published");
+assert.equal(result.results[1].status, "error");
+assert.match(result.results[1].message, /Poshmark assisted fill isn't built yet; use Copy listing/);
 assert.equal(result.results[2].status, "published");
+
+// F4: no session, no browser. A leftover ENABLE_BROWSER_AUTOMATION / *_BROWSER_FLOW is ignored (S9).
+process.env.ENABLE_BROWSER_AUTOMATION = "1";
+process.env.DEPOP_BROWSER_FLOW = '{"url":"https://www.depop.com/products/create/"}';
+const noSession = await publishDraftBundle({ draft, photoPaths: ["/tmp/photo1.jpg"], platforms: ["depop", "poshmark"] });
+assert.deepEqual(noSession.results.map((r) => r.status), ["error", "error"]);
+assert.match(noSession.results[0].message, /posting session/);
+delete process.env.ENABLE_BROWSER_AUTOMATION;
+delete process.env.DEPOP_BROWSER_FLOW;
 
 const retryCalls: string[] = [];
 const retry = await publishDraftBundle(
@@ -86,9 +99,11 @@ const retry = await publishDraftBundle(
       retryCalls.push(`ebay:${opts.sku}`);
       return { offerId: "unexpected", listingId: "unexpected" };
     },
-    publishBrowser: async (platform) => {
-      retryCalls.push(`browser:${platform}`);
-      return { message: "done" };
+    browserSession: {
+      fill: async (platform) => {
+        retryCalls.push(`browser:${platform}`);
+        return { status: "published", message: "done", url: "https://www.depop.com/products/2/" };
+      },
     },
   }
 );
@@ -98,7 +113,7 @@ assert.deepEqual(retryCalls, ["browser:depop"]);
 
 const uncertain = await publishDraftBundle(
   { draft, photoPaths: ["/tmp/photo1.jpg"], platforms: ["depop"] },
-  { publishBrowser: async () => { throw new Error("request timed out after submit"); } }
+  { browserSession: { fill: async () => { throw new Error("request timed out after submit"); } } }
 );
 assert.equal(uncertain.results[0].status, "unknown");
 assert.match(uncertain.results[0].message, /possibly published|status is unknown/);

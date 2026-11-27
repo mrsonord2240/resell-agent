@@ -124,6 +124,26 @@ async function existingOffers(sku: string): Promise<ExistingOffer[]> {
   });
 }
 
+/**
+ * O4, E12: whether an offer's eBay listing is still for sale, from the Inventory API offer lookup.
+ * A sale (any sold quantity: resale items are one of a kind) is `sold`; a withdrawn, deleted or
+ * ended listing is `ended`. Any other eBay failure throws, so the caller shows "couldn't confirm".
+ */
+export async function offerStock(offerId: string): Promise<"active" | "sold" | "ended"> {
+  let offer: any;
+  try {
+    offer = await ebayFetch(`/sell/inventory/v1/offer/${encodeURIComponent(offerId)}`, { method: "GET" });
+  } catch (error) {
+    if ((error as { status?: number }).status === 404) return "ended";
+    throw error;
+  }
+  const listing = offer?.listing ?? {};
+  if (Number(listing.soldQuantity ?? 0) > 0) return "sold";
+  if (offer?.status !== "PUBLISHED") return "ended";
+  if (listing.listingStatus && listing.listingStatus !== "ACTIVE") return "ended";
+  return "active";
+}
+
 // Three-step publish: inventory item -> offer -> publish.
 // Assumes you have already created business policies and a merchant location
 // (one-time setup via the Account API or Seller Hub). See README.

@@ -6,7 +6,8 @@ import { buildDraft } from "./pipeline.js";
 import { renderSheet } from "./sheet.js";
 import { buildConsentUrl, exchangeCode } from "./ebay/auth.js";
 import { startGui } from "./gui.js";
-import { appendRunLog, buildBatchIndex, runBatch, writeBatchIndex, type BatchIndex } from "./batch.js";
+import { appendRunLog, buildBatchIndex, DEFAULT_TABS, prefillStock, RESELL_DIR, runBatch, writeBatchIndex, type BatchIndex, type PrefillStock } from "./batch.js";
+import { lazyDepopSession, openDepopSession } from "./depop-fill.js";
 import {
   CliError,
   markDraft,
@@ -18,7 +19,7 @@ import {
   type DraftFile,
   type MarkAction,
 } from "./draft-file.js";
-import { isBrowserMarket, type PlatformPublishResult } from "./publish.js";
+import { isBrowserMarket, isPublishComplete, skipReason, type PlatformPublishResult } from "./publish.js";
 
 // Every command works two ways. Plain: prose for a person. With --json: stdout
 // carries exactly one envelope, {ok, command, data, error}, and all progress and
@@ -34,7 +35,7 @@ function arg(flag: string): string | undefined {
 }
 const has = (flag: string) => argv.includes(flag);
 /** Flags that take no value, so the word after one can be a positional argument. */
-const BOOLEAN_FLAGS = new Set(["--json", "--clean", "--headful", "--not-posted", "--approve", "--help", "-h"]);
+const BOOLEAN_FLAGS = new Set(["--json", "--clean", "--not-posted", "--approve", "--help", "-h"]);
 /** The first bare word after the command that is not some flag's value. */
 function positional(): string | undefined {
   for (let i = 1; i < argv.length; i++) {
@@ -91,10 +92,11 @@ const COMMANDS: Record<string, CommandSpec> = {
   },
   "post-batch": {
     summary: "Draft every item folder in a batch and publish it. Night: eBay, unattended. Later: --markets depop, the interactive Depop session. Re-runs resume.",
-    usage: "post-batch <dir> [--markets ebay|depop] [--location ...] [--fulfillment ...] [--payment ...] [--return ...]",
+    usage: "post-batch <dir> [--markets ebay|depop] [--tabs 3] [--location ...] [--fulfillment ...] [--payment ...] [--return ...]",
     flags: {
       "<dir>": "batch folder: one subfolder of photos per item; each gets <item>/draft.json, and <dir>/batch.json indexes them",
       "--markets": "what publishes this run: ebay (default) or depop. Intake always drafts eBay and Depop",
+      "--tabs": `Depop: filled tabs open at once (default ${DEFAULT_TABS}); the next item fills when you post or close one`,
       "--location": "eBay: merchant location key (env GUI_DEFAULT_MERCHANT_LOCATION_KEY)",
       "--fulfillment": "eBay: fulfillment policy id (env GUI_DEFAULT_FULFILLMENT_POLICY_ID)",
       "--payment": "eBay: payment policy id (env GUI_DEFAULT_PAYMENT_POLICY_ID)",
@@ -116,7 +118,7 @@ const COMMANDS: Record<string, CommandSpec> = {
   },
   post: {
     summary: "Publish a draft to one or more platforms. Retries skip platforms already published.",
-    usage: "post [--draft draft.json] [--platforms ebay,poshmark,depop] [eBay flags] [--headful]",
+    usage: "post [--draft draft.json] [--platforms ebay,poshmark,depop] [eBay flags]",
     flags: {
       "--draft": "draft file (default draft.json); publish results are saved back into it",
       "--platforms": `${PLATFORMS_FLAG} (default every platform in the draft)`,
@@ -128,7 +130,6 @@ const COMMANDS: Record<string, CommandSpec> = {
       "--category": "eBay: category id override (default: resolved at draft time)",
       "--quantity": "eBay: quantity (default 1)",
       "--sku": "eBay: explicit SKU (default: stable per draft)",
-      "--headful": "Poshmark/Depop: show the browser window",
     },
     run: cmdPost,
   },
@@ -312,21 +313,32 @@ function printResults(results: PlatformPublishResult[]) {
 async function cmdPost() {
   const draftPath = arg("--draft") ?? "draft.json";
   const quantity = arg("--quantity");
-  const outcome = await postDraft({
-    draftPath,
-    platforms: parsePlatforms(arg("--platforms")),
-    headful: has("--headful"),
-    ebay: {
-      imageUrls: list(arg("--images")),
-      merchantLocationKey: arg("--location"),
-      fulfillmentPolicyId: arg("--fulfillment"),
-      paymentPolicyId: arg("--payment"),
-      returnPolicyId: arg("--return"),
-      categoryId: arg("--category"),
-      quantity: quantity === undefined ? undefined : Number(quantity),
-      sku: arg("--sku"),
-    },
-  });
+  const file = readDraftFile(draftPath);
+  const requested = parsePlatforms(arg("--platforms")) ?? [...new Set(file.listings.map((l) => l.platform))];
+  // O4: a Depop fill first checks the item is still for sale on eBay; sold or ended is skipped, nothing stored.
+  let stock: PrefillStock = {};
+  if (requested.includes("depop") && !skipReason("depop", file.publishResults.find((r) => r.platform === "depop"))) {
+    stock = await prefillStock(file.publishResults, "depop");
+  }
+  const sold = "sold" in stock ? stock.sold : null;
+  const platforms = sold ? requested.filter((p) => p !== "depop") : requested;
+  const depop = lazyDepopSession({ logDir: join(dirname(resolve(draftPath)), RESELL_DIR), ...("sold" in stock ? {} : stock) });
+  const ebay = {
+    imageUrls: list(arg("--images")),
+    merchantLocationKey: arg("--location"),
+    fulfillmentPolicyId: arg("--fulfillment"),
+    paymentPolicyId: arg("--payment"),
+    returnPolicyId: arg("--return"),
+    categoryId: arg("--category"),
+    quantity: quantity === undefined ? undefined : Number(quantity),
+    sku: arg("--sku"),
+  };
+  const posted = platforms.length
+    ? await postDraft({ draftPath, platforms, ebay }, { browserSession: depop.session }).finally(depop.close)
+    : { draftId: file.draftId, results: [], publishResults: file.publishResults, complete: false };
+  const outcome = sold
+    ? { ...posted, results: [...posted.results, { platform: "depop" as const, status: "skipped" as const, message: sold }], complete: isPublishComplete(posted.publishResults, requested) }
+    : posted;
   if (!json) {
     say(`Publish results for ${draftPath}:`);
     printResults(outcome.results);
@@ -349,16 +361,21 @@ async function cmdPostBatch() {
   const dir = positional();
   if (!dir) usage("the batch folder is required");
   if (has("--markets") && !arg("--markets")) usage("--markets needs a value: ebay or depop");
-  const outcome = await runBatch({
-    dir,
-    markets: parsePlatforms(arg("--markets")),
-    ebay: {
-      merchantLocationKey: arg("--location"),
-      fulfillmentPolicyId: arg("--fulfillment"),
-      paymentPolicyId: arg("--payment"),
-      returnPolicyId: arg("--return"),
+  if (has("--tabs") && !arg("--tabs")) usage("--tabs needs a number");
+  const outcome = await runBatch(
+    {
+      dir,
+      markets: parsePlatforms(arg("--markets")),
+      tabs: arg("--tabs") === undefined ? undefined : Number(arg("--tabs")),
+      ebay: {
+        merchantLocationKey: arg("--location"),
+        fulfillmentPolicyId: arg("--fulfillment"),
+        paymentPolicyId: arg("--payment"),
+        returnPolicyId: arg("--return"),
+      },
     },
-  });
+    { openBrowserSession: () => openDepopSession() }
+  );
   const pending = outcome.index.items.filter(
     (row) => row.intake !== "drafted" || outcome.markets.some((m) => row.markets.find((r) => r.market === m)?.status !== "published")
   );
@@ -368,6 +385,7 @@ async function cmdPostBatch() {
       if (item.error) say(`  ${item.item.padEnd(16)} error     ${item.error}`);
       for (const r of item.results) say(`  ${item.item.padEnd(16)} ${r.platform.padEnd(9)} ${r.status.padEnd(10)} ${r.message}${r.url ? `  ${r.url}` : ""}`);
     }
+    if (outcome.halted) say(`\nDepop halted: ${outcome.halted}`);
     say(`\nWrote ${join(outcome.dir, "batch.json")}.${pending.length ? ` ${pending.length} item(s) need you: status --batch ${dir}` : ""}`);
   }
   if (!outcome.complete) {

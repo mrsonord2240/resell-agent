@@ -2,7 +2,6 @@ import type { Platform } from "./types.js";
 
 export interface GuiBootState {
   platforms: Platform[];
-  browserAutomationEnabled: boolean;
   ebayDefaults: {
     sku: string;
     merchantLocationKey: string;
@@ -207,7 +206,7 @@ export function buildGuiScript(boot: GuiBootState): string {
     "function renderListingCard(listing) {",
     "  var specifics = listing.itemSpecifics ? JSON.stringify(listing.itemSpecifics, null, 2) : '{}';",
     "  var categoryField = listing.platform === 'ebay' ? '<label>Category ID<input data-field=\"categoryId\" value=\"' + escapeHtml(listing.categoryId || '') + '\"></label>' : '';",
-    "  var extraNote = listing.platform === 'ebay' ? '<p class=\"muted\">eBay publish uploads your photos and needs the one-time account IDs.</p>' : '<p class=\"muted\">Browser automation is optional; use Copy listing for manual copy/paste.</p>';",
+    "  var extraNote = listing.platform === 'ebay' ? '<p class=\"muted\">eBay publish uploads your photos and needs the one-time account IDs.</p>' : (listing.platform === 'depop' ? '<p class=\"muted\">Publish opens this form filled in Chrome (its own Depop profile) and waits for you to click Post. Or use Copy listing.</p>' : '<p class=\"muted\">Poshmark assisted fill is not built yet; use Copy listing.</p>');",
     "  return '<article class=\"listing-card\" data-platform=\"' + listing.platform + '\">' +",
     "    '<header><div><h3>' + listing.platform.toUpperCase() + '</h3><p class=\"muted\">Condition: ' + escapeHtml(listing.condition || '') + '</p></div><div class=\"publish-status\" data-status data-kind=\"idle\">Ready</div></header>' +",
     "    '<label>Title<input data-field=\"title\" value=\"' + escapeHtml(listing.title) + '\"></label>' +",
@@ -432,7 +431,7 @@ export function buildGuiScript(boot: GuiBootState): string {
     "if (els.ebayAuthUrlButton) els.ebayAuthUrlButton.addEventListener('click', getEbayAuthUrl);",
     "if (els.ebayExchangeButton) els.ebayExchangeButton.addEventListener('click', exchangeEbayCode);",
     "els.publishButton.addEventListener('click', function (event) { event.preventDefault(); publishAll(); });",
-    "setStatus(BOOT.browserAutomationEnabled ? 'Browser automation is enabled when configured.' : 'Browser automation is disabled until ENABLE_BROWSER_AUTOMATION=1 is set.', 'info');",
+    "setStatus('Choose photos to begin. Depop opens a filled form in Chrome and waits for you to click Post.', 'info');",
     "renderPhotoStrip([]);",
     "updatePlatformModeNote();",
     "show(els.publishPanel, false);",

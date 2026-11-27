@@ -47,7 +47,7 @@ const legacy = readDraftFile(path);
 assert.ok(legacy.draftId);
 assert.deepStrictEqual(legacy.publishResults, []);
 
-// First post: eBay publishes, Poshmark fails, Depop unknown -> incomplete, results saved.
+// First post: eBay publishes, Poshmark errors (no fill script yet, D1), Depop unknown -> incomplete, results saved.
 writeDraftFile(path, newDraftFile(bundle, [join(dir, "a.jpg")]));
 const calls: string[] = [];
 const first = await postDraft(
@@ -57,21 +57,25 @@ const first = await postDraft(
       calls.push(`ebay:${opts.sku}`);
       return { offerId: "o1", listingId: "l1" } as any;
     },
-    publishBrowser: async (platform) => {
-      calls.push(platform);
-      if (platform === "poshmark") throw new Error("selector not found");
-      return { status: "unknown", message: "no success marker" };
+    browserSession: {
+      fill: async (platform) => {
+        calls.push(platform);
+        return { status: "unknown", message: "submit seen, no URL" };
+      },
     },
   }
 );
 assert.strictEqual(first.complete, false);
 assert.deepStrictEqual(first.results.map((r) => r.status), ["published", "error", "unknown"]);
 const saved = readDraftFile(path);
-assert.deepStrictEqual(saved.publishResults.map((r) => r.status), ["published", "error", "unknown"]);
+const savedStatus = (s: typeof saved) => ["ebay", "poshmark", "depop"].map((p) => s.publishResults.find((r) => r.platform === p)?.status);
+assert.deepStrictEqual(savedStatus(saved), ["published", "error", "unknown"]);
 assert.strictEqual(saved.ebay?.merchantLocationKey, "loc", "eBay settings persist for retries");
+assert.match(saved.publishResults.find((r) => r.platform === "poshmark")!.message, /Poshmark assisted fill isn't built yet/);
+assert.deepStrictEqual(calls.slice(1), ["depop"], "Poshmark never reaches the session");
 const sku = calls[0];
 
-// Retry with no flags: eBay skipped (settings came from the file), Poshmark retried, Depop's
+// Retry with no flags: eBay skipped (settings came from the file), Poshmark errors again, Depop's
 // `unknown` skipped until Sam verifies it (verify-first), so the merged state stays incomplete.
 calls.length = 0;
 const second = await postDraft(
@@ -80,16 +84,18 @@ const second = await postDraft(
     publishEbay: async () => {
       throw new Error("must not republish eBay");
     },
-    publishBrowser: async (platform) => {
-      calls.push(platform);
-      return { status: "published", message: "ok", url: `https://${platform}.example/1` };
+    browserSession: {
+      fill: async (platform) => {
+        calls.push(platform);
+        return { status: "published", message: "ok", url: `https://www.depop.com/products/1/` };
+      },
     },
   }
 );
 assert.strictEqual(second.complete, false);
-assert.deepStrictEqual(second.results.map((r) => r.status), ["skipped", "published", "skipped"]);
-assert.deepStrictEqual(readDraftFile(path).publishResults.map((r) => r.status), ["published", "published", "unknown"]);
-assert.deepStrictEqual(calls, ["poshmark"]);
+assert.deepStrictEqual(second.results.map((r) => r.status), ["skipped", "error", "skipped"]);
+assert.deepStrictEqual(savedStatus(readDraftFile(path)), ["published", "error", "unknown"]);
+assert.deepStrictEqual(calls, []);
 assert.ok(sku.startsWith("ebay:resale-gui-"), "stable per-draft SKU");
 
 // Lock: a second concurrent post is refused, and the lock is released afterwards.
@@ -119,7 +125,7 @@ assert.strictEqual(JSON.parse(bad.stdout).error.code, "usage");
 const status = run("status", "--draft", path);
 assert.strictEqual(status.status, 0);
 const statusData = JSON.parse(status.stdout).data;
-assert.deepStrictEqual(statusData.listings.map((l: any) => l.publish.status), ["published", "published", "unknown"]);
+assert.deepStrictEqual(statusData.listings.map((l: any) => l.publish.status), ["published", "error", "unknown"]);
 
 // `post` exits 3 from the merged state: the stored Depop `unknown` keeps it incomplete.
 const incomplete = run("post", "--draft", path, "--platforms", "depop");
