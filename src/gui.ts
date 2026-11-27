@@ -6,14 +6,18 @@ import { tmpdir } from "node:os";
 import { buildConsentUrl, exchangeCode } from "./ebay/auth.js";
 import { buildDraft } from "./pipeline.js";
 import {
+  isBrowserMarket,
   mergePublishResults,
   publishDraftBundle,
   skipReason,
   validateHttpsImageUrls,
+  type BrowserMarket,
   type EbayPublishSettings,
   type FillRecorder,
   type PlatformPublishResult,
 } from "./publish.js";
+import { applyMark, CliError, type MarkAction } from "./draft-file.js";
+import { expectedHost, isExpectedPlatformUrl } from "./browser-automation.js";
 import { prefillStock, RESELL_DIR, type PrefillStock } from "./batch.js";
 import { lazyDepopSession } from "./depop-fill.js";
 import { buildGuiScript, type GuiBootState } from "./gui-client.js";
@@ -331,6 +335,11 @@ function renderPage(boot: GuiBootState): string {
     .result.published { border-color: var(--green); }
     .result.error, .result.unknown { border-color: var(--red); }
     .result.skipped { border-color: var(--blue); }
+    .result.filling { border-color: var(--red); }
+    .result.not_posted, .result.held { border-color: var(--line); }
+    .mark-row { display: flex; flex-wrap: wrap; gap: 0.5rem; margin-top: 0.6rem; }
+    .mark-row input { flex: 1 1 14rem; }
+    .publish-status[data-kind="filling"] { border-color: var(--red); color: var(--red); }
     .form-note { border: 1px dashed var(--gold-ink); border-radius: var(--radius); padding: 1rem; margin-top: 1.25rem; background: var(--surface-2); }
     .copy-mode-note { border-color: var(--blue); }
     #publish-panel[hidden] { display: none; }
@@ -632,7 +641,12 @@ async function loadDraftRecords(): Promise<void> {
   }
 }
 
-async function cleanupExpiredDrafts(now = Date.now()): Promise<void> {
+/** A draft whose Depop-style tab may still be live or unverified is never swept (O7): Sam has to mark it first. */
+function hasUnresolvedMarket(results: unknown): boolean {
+  return Array.isArray(results) && results.some((r) => r && (r.status === "unknown" || r.status === "filling"));
+}
+
+export async function cleanupExpiredDrafts(now = Date.now()): Promise<void> {
   let entries;
   try {
     entries = await readdir(DATA_DIR, { withFileTypes: true });
@@ -645,6 +659,7 @@ async function cleanupExpiredDrafts(now = Date.now()): Promise<void> {
     try {
       const raw = await readFile(draftRecordPath(entry.name), "utf8");
       const parsed = JSON.parse(raw) as Partial<DraftRecord>;
+      if (hasUnresolvedMarket(parsed.publishResults)) continue;
       timestamp = Date.parse(parsed.updatedAt ?? parsed.createdAt ?? "");
     } catch {
       try {
@@ -877,8 +892,14 @@ function guiFillRecorder(record: DraftRecord): FillRecorder {
       await persistDraft(record);
       return { attemptId };
     },
-    // handlePublish merges every result once the run ends.
-    finish: async (_platform, _attemptId, result) => result,
+    // handlePublish merges every result once the run ends. A mark Sam made while the tab waited stands (E7),
+    // unless the Post was seen, which then needs verifying.
+    finish: async (platform, attemptId, result, opts) => {
+      const stored = record.publishResults.find((r) => r.platform === platform);
+      if (stored && stored.status === "filling" && stored.attemptId === attemptId) return result;
+      if (!stored || stored.status === "filling") return { ...result, status: "unknown" as const };
+      return opts.submitSeen ? { ...stored, status: "unknown" as const, url: result.url ?? stored.url, message: `${platform}: marked by hand, but a Post was seen; verify the listing.` } : stored;
+    },
   };
 }
 
@@ -943,6 +964,44 @@ async function handlePublish(req: IncomingMessage, boot: GuiBootState, res: Serv
   } finally {
     activePublishes.delete(draftId);
   }
+}
+
+/** Sam's hand resolution of a browser market on a GUI draft (O7): the CLI `mark` rules, on the stored record. */
+async function handleMark(req: IncomingMessage, draftId: string, res: ServerResponse): Promise<void> {
+  const record = await draftIdToRecord(draftId);
+  if (!record) {
+    sendJson(res, 404, { error: "Draft not found or expired." });
+    return;
+  }
+  const body = await parseJsonBody(req);
+  const market = body.market;
+  if (typeof market !== "string" || !isBrowserMarket(market as Platform)) {
+    throw new HttpError(400, "market must be a browser market (depop or poshmark).");
+  }
+  let action: MarkAction;
+  if (body.action === "posted") {
+    const url = typeof body.url === "string" ? body.url.trim() : "";
+    if (!url) throw new HttpError(400, "Paste the listing URL to mark it posted.");
+    if (!isExpectedPlatformUrl(market as BrowserMarket, url)) {
+      throw new HttpError(400, `The listing URL must be an https address on ${expectedHost(market as BrowserMarket)}.`);
+    }
+    action = { kind: "posted", market: market as BrowserMarket, url };
+  } else if (body.action === "not_posted") {
+    action = { kind: "not_posted", market: market as BrowserMarket };
+  } else {
+    throw new HttpError(400, 'action must be "posted" or "not_posted".');
+  }
+  let out;
+  try {
+    out = applyMark(record.publishResults, action);
+  } catch (error) {
+    if (error instanceof CliError) throw new HttpError(409, error.message);
+    throw error;
+  }
+  record.publishResults = out.publishResults;
+  record.updatedAt = new Date().toISOString();
+  await persistDraft(record);
+  sendJson(res, 200, { publishResults: record.publishResults, changes: out.changes });
 }
 
 async function handleDraftPhoto(res: ServerResponse, draftId: string, indexStr: string): Promise<void> {
@@ -1123,6 +1182,10 @@ export async function startGui(port = Number(process.env.GUI_PORT ?? "3000")): P
         }
         if (parts.length === 3 && method === "PATCH") {
           await handleDraftEdit(req, draftId, res);
+          return;
+        }
+        if (parts.length === 4 && parts[3] === "mark" && method === "POST") {
+          await handleMark(req, draftId, res);
           return;
         }
         if (parts.length === 5 && parts[3] === "photo" && method === "GET") {
