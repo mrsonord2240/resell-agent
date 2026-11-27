@@ -31,12 +31,12 @@
     "node": ">=22.0.0"
   },
   "dependencies": {
+    "playwright-core": "^1.62.1",
     "sharp": "^0.35.5"
   },
   "optionalDependencies": {
     "@huggingface/transformers": "^4.3.2",
-    "@imgly/background-removal-node": "^1.4.5",
-    "playwright": "^1.62.1"
+    "@imgly/background-removal-node": "^1.4.5"
   },
   "overrides": {
     "sharp": "$sharp",
@@ -70,8 +70,6 @@
       "!node_modules/@imgly/**",
       "!node_modules/@xenova/**",
       "!node_modules/@huggingface/**",
-      "!node_modules/playwright/**",
-      "!node_modules/playwright-core/**",
       "!node_modules/onnxruntime-node/**",
       "!node_modules/onnxruntime-web/**",
       "!node_modules/onnxruntime-common/**",
