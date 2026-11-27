@@ -1,17 +1,29 @@
 #!/usr/bin/env node
 import "./load-env.js"; // first: later modules may read env at load time
-import { writeFileSync } from "node:fs";
+import { existsSync, writeFileSync } from "node:fs";
+import { dirname, join, resolve } from "node:path";
 import { buildDraft } from "./pipeline.js";
 import { renderSheet } from "./sheet.js";
 import { buildConsentUrl, exchangeCode } from "./ebay/auth.js";
 import { startGui } from "./gui.js";
-import { CliError, newDraftFile, parsePlatforms, postDraft, readDraftFile, writeDraftFile, type DraftFile } from "./draft-file.js";
-import type { PlatformPublishResult } from "./publish.js";
+import { appendRunLog, buildBatchIndex, runBatch, writeBatchIndex, type BatchIndex } from "./batch.js";
+import {
+  CliError,
+  markDraft,
+  newDraftFile,
+  parsePlatforms,
+  postDraft,
+  readDraftFile,
+  writeDraftFile,
+  type DraftFile,
+  type MarkAction,
+} from "./draft-file.js";
+import { isBrowserMarket, type PlatformPublishResult } from "./publish.js";
 
 // Every command works two ways. Plain: prose for a person. With --json: stdout
 // carries exactly one envelope, {ok, command, data, error}, and all progress and
 // library logging goes to stderr. Exit codes: 0 ok, 1 error, 2 usage,
-// 3 publish incomplete (some platform errored or is unknown; data has results).
+// 3 publish incomplete (some platform errored, is unknown or held; data has results).
 
 const argv = process.argv.slice(2);
 const json = argv.includes("--json");
@@ -21,6 +33,16 @@ function arg(flag: string): string | undefined {
   return i !== -1 && i + 1 < argv.length && !argv[i + 1].startsWith("--") ? argv[i + 1] : undefined;
 }
 const has = (flag: string) => argv.includes(flag);
+/** Flags that take no value, so the word after one can be a positional argument. */
+const BOOLEAN_FLAGS = new Set(["--json", "--clean", "--headful", "--not-posted", "--approve", "--help", "-h"]);
+/** The first bare word after the command that is not some flag's value. */
+function positional(): string | undefined {
+  for (let i = 1; i < argv.length; i++) {
+    if (!argv[i].startsWith("-")) return argv[i];
+    if (!BOOLEAN_FLAGS.has(argv[i]) && i + 1 < argv.length && !argv[i + 1].startsWith("--")) i++;
+  }
+  return undefined;
+}
 const list = (v: string | undefined) => (v ?? "").split(",").map((s) => s.trim()).filter(Boolean);
 const say = (...parts: unknown[]) => console.log(...parts);
 
@@ -59,10 +81,38 @@ const COMMANDS: Record<string, CommandSpec> = {
     run: cmdOutfit,
   },
   status: {
-    summary: "Show a draft's listings, price and per-platform publish state.",
-    usage: "status [--draft draft.json]",
-    flags: { "--draft": "draft file (default draft.json)" },
+    summary: "Show a draft's listings, price and per-platform publish state, or a whole batch's.",
+    usage: "status [--draft draft.json] | status --batch <dir>",
+    flags: {
+      "--draft": "draft file (default draft.json)",
+      "--batch": "batch folder: every item and market in a table; flags unknown, held and unmapped-field rows",
+    },
     run: cmdStatus,
+  },
+  "post-batch": {
+    summary: "Draft every item folder in a batch and publish it. Night: eBay, unattended. Later: --markets depop, the interactive Depop session. Re-runs resume.",
+    usage: "post-batch <dir> [--markets ebay|depop] [--location ...] [--fulfillment ...] [--payment ...] [--return ...]",
+    flags: {
+      "<dir>": "batch folder: one subfolder of photos per item; each gets <item>/draft.json, and <dir>/batch.json indexes them",
+      "--markets": "what publishes this run: ebay (default) or depop. Intake always drafts eBay and Depop",
+      "--location": "eBay: merchant location key (env GUI_DEFAULT_MERCHANT_LOCATION_KEY)",
+      "--fulfillment": "eBay: fulfillment policy id (env GUI_DEFAULT_FULFILLMENT_POLICY_ID)",
+      "--payment": "eBay: payment policy id (env GUI_DEFAULT_PAYMENT_POLICY_ID)",
+      "--return": "eBay: return policy id (env GUI_DEFAULT_RETURN_POLICY_ID)",
+    },
+    run: cmdPostBatch,
+  },
+  mark: {
+    summary: "Resolve a market by hand after checking the site: posted (with its URL) or not posted; or release a held draft.",
+    usage: "mark --draft <draft.json> (--market depop --posted <url> | --market depop --not-posted | --approve)",
+    flags: {
+      "--draft": "draft file (required)",
+      "--market": "depop or poshmark (eBay retries itself under its SKU)",
+      "--posted": "the live listing URL; the market becomes published",
+      "--not-posted": "the market becomes not_posted; the next session fills it again",
+      "--approve": "release a held draft: every held market becomes eligible to publish",
+    },
+    run: cmdMark,
   },
   post: {
     summary: "Publish a draft to one or more platforms. Retries skip platforms already published.",
@@ -205,7 +255,36 @@ async function cmdOutfit() {
   return { svg, pieces };
 }
 
+function printBatchRows(index: BatchIndex) {
+  for (const row of index.items) {
+    if (row.intake !== "drafted") {
+      say(`  ${row.item.padEnd(16)} ${(row.intake === "pending" ? "-" : "error").padEnd(9)} ${row.error ?? "not drafted yet"}`);
+      continue;
+    }
+    for (const m of row.markets) {
+      const flags = m.flags.map((f) => (f === "unmapped" ? `unmapped: ${m.unmapped.join(", ")}` : f.toUpperCase())).join("; ");
+      say(`  ${row.item.padEnd(16)} ${m.market.padEnd(9)} ${m.status.padEnd(10)} ${flags ? `[${flags}] ` : ""}${m.url ?? (m.status === "published" ? "" : m.message ?? "")}`);
+    }
+  }
+}
+
+async function cmdBatchStatus(dir: string) {
+  const index = buildBatchIndex(dir);
+  if (!json) {
+    say(`${index.dir}  ${index.items.length} item(s)`);
+    printBatchRows(index);
+    const flagged = index.items.filter((row) => row.intake === "error" || row.markets.some((m) => m.flags.length));
+    if (flagged.length) say(`\n${flagged.length} item(s) flagged. Held: mark --draft <f> --approve. Unknown: check the site, then mark --posted <url> or --not-posted.`);
+  }
+  return index;
+}
+
 async function cmdStatus() {
+  if (has("--batch")) {
+    const dir = arg("--batch");
+    if (!dir) usage("--batch needs the batch folder");
+    return cmdBatchStatus(dir);
+  }
   const path = arg("--draft") ?? "draft.json";
   const file = readDraftFile(path);
   const results = new Map(file.publishResults.map((r) => [r.platform, r]));
@@ -264,6 +343,87 @@ async function cmdPost() {
     );
   }
   return { draft: draftPath, ...outcome };
+}
+
+async function cmdPostBatch() {
+  const dir = positional();
+  if (!dir) usage("the batch folder is required");
+  if (has("--markets") && !arg("--markets")) usage("--markets needs a value: ebay or depop");
+  const outcome = await runBatch({
+    dir,
+    markets: parsePlatforms(arg("--markets")),
+    ebay: {
+      merchantLocationKey: arg("--location"),
+      fulfillmentPolicyId: arg("--fulfillment"),
+      paymentPolicyId: arg("--payment"),
+      returnPolicyId: arg("--return"),
+    },
+  });
+  const pending = outcome.index.items.filter(
+    (row) => row.intake !== "drafted" || outcome.markets.some((m) => row.markets.find((r) => r.market === m)?.status !== "published")
+  );
+  if (!json) {
+    say(`Batch ${outcome.dir}: ${outcome.items.length} item(s), publishing ${outcome.markets.join(", ")}`);
+    for (const item of outcome.items) {
+      if (item.error) say(`  ${item.item.padEnd(16)} error     ${item.error}`);
+      for (const r of item.results) say(`  ${item.item.padEnd(16)} ${r.platform.padEnd(9)} ${r.status.padEnd(10)} ${r.message}${r.url ? `  ${r.url}` : ""}`);
+    }
+    say(`\nWrote ${join(outcome.dir, "batch.json")}.${pending.length ? ` ${pending.length} item(s) need you: status --batch ${dir}` : ""}`);
+  }
+  if (!outcome.complete) {
+    throw Object.assign(
+      new CliError(
+        "publish_incomplete",
+        `${pending.length} item(s) not published to ${outcome.markets.join(", ")}.`,
+        `See status --batch ${dir}. Held: check, then mark --draft <f> --approve. Unknown: check the site, then mark --posted <url> or --not-posted. Errors: fix and re-run post-batch; published markets are skipped.`,
+        3
+      ),
+      { data: outcome }
+    );
+  }
+  return outcome;
+}
+
+function markAction(): MarkAction {
+  const posted = arg("--posted");
+  const chosen = [has("--posted"), has("--not-posted"), has("--approve")].filter(Boolean).length;
+  if (chosen !== 1) usage("give exactly one of --posted <url>, --not-posted, --approve");
+  if (has("--approve")) {
+    if (has("--market")) usage("--approve releases the whole draft; drop --market");
+    return { kind: "approve" };
+  }
+  const market = parsePlatforms(arg("--market"));
+  if (!market || market.length !== 1) usage("--market is required: depop or poshmark");
+  const m = market[0];
+  if (!isBrowserMarket(m)) usage("eBay is not marked by hand: a re-run retries it under the same SKU and finds an existing listing");
+  if (has("--not-posted")) return { kind: "not_posted", market: m };
+  let url: URL | undefined;
+  try {
+    url = posted ? new URL(posted) : undefined;
+  } catch {
+    /* reported below */
+  }
+  if (!url || url.protocol !== "https:") usage("--posted needs the listing's https:// URL");
+  return { kind: "posted", market: m, url: url.toString() };
+}
+
+async function cmdMark() {
+  const draftPath = arg("--draft");
+  if (!draftPath) usage("--draft is required");
+  const action = markAction();
+  const { changes, publishResults } = await markDraft(draftPath, action);
+  const itemDir = dirname(resolve(draftPath));
+  for (const c of changes) {
+    appendRunLog(itemDir, { by: "mark", market: c.market, from: c.from, to: c.to, reason: c.message, ...(c.url ? { url: c.url } : {}) });
+  }
+  // A draft inside a batch keeps the batch index current.
+  const batchDir = dirname(itemDir);
+  if (changes.length && existsSync(join(batchDir, "batch.json"))) writeBatchIndex(batchDir);
+  if (!json) {
+    if (!changes.length) say(`${draftPath}: nothing held; no change.`);
+    for (const c of changes) say(`${draftPath}: ${c.market} ${c.from} -> ${c.to}${c.url ? `  ${c.url}` : ""}`);
+  }
+  return { draft: draftPath, changes, publishResults };
 }
 
 async function cmdIndex() {

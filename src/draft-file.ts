@@ -19,8 +19,9 @@ import {
   type FillRecorder,
   type PlatformPublishResult,
   type PublishDeps,
+  type PublishStatus,
 } from "./publish.js";
-import { GUI_PLATFORMS } from "./gui-validation.js";
+import { GUI_PLATFORMS, stableGuiSku } from "./gui-validation.js";
 import type { DraftBundle, Platform } from "./types.js";
 
 export interface DraftFile extends DraftBundle {
@@ -325,6 +326,11 @@ export interface PostOutcome {
   complete: boolean;
 }
 
+/** The eBay SKU this draft publishes under: an explicit `ebay.sku`, else the stable id (same rule as `runPublish`). */
+export function draftSku(file: DraftFile, prefix = process.env.GUI_DEFAULT_SKU ?? ""): string {
+  return file.ebay?.sku?.trim() || stableGuiSku(file.draftId, prefix);
+}
+
 function runPublish(file: DraftFile, platforms: Platform[], ebay: EbayPublishSettings | undefined, args: PostArgs, deps: PublishDeps) {
   return publishDraftBundle(
     {
@@ -401,4 +407,84 @@ export async function postDraft(args: PostArgs, deps: PublishDeps = {}): Promise
     publishResults: file.publishResults,
     complete: isPublishComplete(file.publishResults, platforms),
   };
+}
+
+/** How long `mark` waits for the draft lock; an eBay publish can hold it while photos upload. */
+export const MARK_LOCK_WAIT_MS = 30_000;
+
+/** Sam's hand resolution of a draft's state (D3, O5). `posted` and `not_posted` apply to browser markets only (D6). */
+export type MarkAction =
+  | { kind: "posted"; market: BrowserMarket; url: string }
+  | { kind: "not_posted"; market: BrowserMarket }
+  | { kind: "approve" };
+
+/** One state change a mark made; `none` means no stored entry. */
+export interface MarkChange {
+  market: Platform;
+  from: PublishStatus | "none";
+  to: PublishStatus | "none";
+  message: string;
+  url?: string;
+}
+
+function invalidTransition(message: string, hint: string): CliError {
+  return new CliError("invalid_transition", message, hint);
+}
+
+/**
+ * The mark transitions, on the stored results (pure):
+ * - `posted`: any state but `published` -> `published` with the URL (resolves `unknown`, a stale `filling`, ...).
+ * - `not_posted`: any state but `published` or `held` -> `not_posted`, which the next session fills again.
+ * - `approve`: every `held` entry is removed, so each market is eligible again; nothing held is a no-op.
+ * `published` is final: no mark changes it.
+ */
+export function applyMark(results: PlatformPublishResult[], action: MarkAction): { publishResults: PlatformPublishResult[]; changes: MarkChange[] } {
+  if (action.kind === "approve") {
+    const changes = results
+      .filter((r) => r.status === "held")
+      .map((r): MarkChange => ({ market: r.platform, from: "held", to: "none", message: "Approved by hand; eligible to publish." }));
+    return { publishResults: results.filter((r) => r.status !== "held"), changes };
+  }
+  const { market } = action;
+  const stored = results.find((r) => r.platform === market);
+  if (stored?.status === "published") {
+    throw invalidTransition(
+      `${market} is already published${stored.url ? ` (${stored.url})` : ""}; a published market is final.`,
+      "Nothing to mark. If the listing was removed, handle it on the site."
+    );
+  }
+  let next: PlatformPublishResult;
+  if (action.kind === "posted") {
+    next = { platform: market, status: "published", message: "Marked posted by hand.", url: action.url };
+  } else {
+    if (stored?.status === "held") {
+      throw invalidTransition(`${market} is held for review.`, "Release the draft with `mark --approve` first.");
+    }
+    next = { platform: market, status: "not_posted", message: "Marked not posted by hand; the next session fills it again." };
+  }
+  return {
+    publishResults: mergePublishResults(results, [next]),
+    changes: [{ market, from: stored?.status ?? "none", to: next.status, message: next.message, url: next.url }],
+  };
+}
+
+/** `resell mark`: applies one mark under the draft lock (taken briefly, so a waiting Depop tab never blocks it, E7). */
+export async function markDraft(
+  draftPath: string,
+  action: MarkAction,
+  lock: DraftLockOptions = { waitMs: MARK_LOCK_WAIT_MS }
+): Promise<{ publishResults: PlatformPublishResult[]; changes: MarkChange[] }> {
+  return withDraftLock(
+    draftPath,
+    async () => {
+      const file = readDraftFile(draftPath);
+      const out = applyMark(file.publishResults, action);
+      if (out.changes.length) {
+        file.publishResults = out.publishResults;
+        writeDraftFile(draftPath, file);
+      }
+      return out;
+    },
+    lock
+  );
 }
