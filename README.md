@@ -271,13 +271,24 @@ to 12 photos and 30 MiB total. Uploaded files are decoded and re-encoded as
 private JPEGs with `sharp`; SVG, HTML, malformed files and non-raster inputs are
 rejected. Draft metadata, edits, photos and per-platform results are kept under
 a private temporary directory (default `GUI_DATA_DIR=$TMPDIR/resell-agent-gui`)
-and expire after 24 hours (`GUI_DRAFT_TTL_MS` can override that value). A draft
-ID is saved in browser local storage so a refresh can recover it. Expired and
-failed-build directories are cleaned up.
+and expire after 24 hours (`GUI_DRAFT_TTL_MS` can override that value). The
+sweep never deletes a draft that has a `published` result (it is the record of a
+live listing) or an `unknown`/`filling` one (mark it posted or not posted first).
+A draft ID is saved in browser local storage so a refresh can recover it. Expired
+and failed-build directories are cleaned up.
+
+The **Drafts** list shows every stored GUI draft, newest first, with its first
+photo, title, price, created time and each market's state (a published one links
+to the listing). **Open** loads a draft back into the review view to edit and
+publish; it keeps its draft ID, so its eBay SKU is unchanged and a published
+market is not posted twice. eBay item specifics are editable there (add, change
+or remove a name and value) and save to the draft. A Depop listing lists the
+fields the tool could not map, to fill in yourself. **Delete** removes the
+draft's folder after a confirm; deleting a draft never ends its eBay listing.
 
 The publish endpoint accepts only a stored `draftId`. It merges the reviewable
 title, description, finite price (a positive price is required for external
-publishing), and eBay category into the server's
+publishing), eBay category and eBay item specifics into the server's
 stored draft; it does not trust a client-supplied full `DraftBundle`. Select at
 least one of `ebay`, `poshmark`, or `depop`. eBay uploads the draft's photos through
 eBay's Media API; pasted image URLs are optional and must be public HTTPS URLs. GUI eBay SKUs are stable for a draft
@@ -428,6 +439,7 @@ src/
   depop-fill.ts     Depop sell-form script, selector map, submit detection, session
   browser-automation.ts  installed Chrome on a dedicated profile, over CDP
   gui-validation.ts  GUI boundary validation, editable-field merge, stable SKU
+  gui-drafts.ts     GUI Drafts list rows, draft-id format, which drafts the TTL sweep keeps
   env.ts            shared truthy environment-flag parser
   pipeline.ts       photos -> priced listings
   types.ts

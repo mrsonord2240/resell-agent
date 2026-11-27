@@ -21,6 +21,7 @@ import { expectedHost, isExpectedPlatformUrl } from "./browser-automation.js";
 import { prefillStock, RESELL_DIR, type PrefillStock } from "./batch.js";
 import { lazyDepopSession } from "./depop-fill.js";
 import { buildGuiScript, type GuiBootState } from "./gui-client.js";
+import { draftListRows, isGuiDraftId, keepFromSweep, unmappedByMarket } from "./gui-drafts.js";
 import { GUI_PLATFORMS, mergeEditableListingFields, validatePlatformSelection } from "./gui-validation.js";
 import { applyRuntimeSettings, resetRuntimeSettings, RUNTIME_SECRET_KEYS } from "./runtime-settings.js";
 import type { DraftBundle, Platform } from "./types.js";
@@ -55,9 +56,10 @@ export const GUI_DRAFT_TTL_MS = Number.isFinite(configuredDraftTtl) && configure
   : 24 * 60 * 60 * 1000;
 const GUI_MAX_JSON_BYTES = 2 * 1024 * 1024;
 const GUI_MAX_IMAGE_PIXELS = 40_000_000;
-const GUI_DIR_RE = /^[a-zA-Z0-9-]{20,64}$/;
 let activeGuiServer: ReturnType<typeof createServer> | null = null;
-const activePublishes = new Set<string>();
+export const activePublishes = new Set<string>();
+/** Drafts Sam deleted this process: a save still in flight for one must not re-create its folder. */
+const deletedDrafts = new Set<string>();
 
 class HttpError extends Error {
   constructor(public readonly status: number, message: string) {
@@ -340,6 +342,26 @@ function renderPage(boot: GuiBootState): string {
     .mark-row { display: flex; flex-wrap: wrap; gap: 0.5rem; margin-top: 0.6rem; }
     .mark-row input { flex: 1 1 14rem; }
     .publish-status[data-kind="filling"] { border-color: var(--red); color: var(--red); }
+    #drafts-panel { margin-top: clamp(1rem, 2vw, 1.5rem); }
+    .drafts-head { display: flex; justify-content: space-between; align-items: flex-end; gap: 1rem; margin-bottom: 0.9rem; }
+    .drafts-list { display: grid; }
+    .draft-row { display: grid; grid-template-columns: 56px minmax(0, 1fr) auto; gap: 0.9rem; align-items: center; border-top: 1px solid var(--line); padding: 0.75rem 0.5rem; }
+    .draft-row.is-open { background: var(--surface-2); box-shadow: inset 3px 0 0 var(--gold-ink); }
+    .draft-thumb { width: 56px; height: 56px; object-fit: cover; display: block; border: 1px solid var(--line); border-radius: var(--radius); background: var(--surface-2); }
+    .draft-info strong { display: block; color: var(--ink); font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .draft-info p { margin: 0.1rem 0 0; color: var(--muted); font-size: 0.82rem; }
+    .market-chips { display: flex; flex-wrap: wrap; gap: 0.35rem; margin-top: 0.35rem; }
+    .chip { padding: 0.12rem 0.45rem; border: 1px solid var(--line); border-radius: var(--radius); color: var(--muted); font-size: 0.64rem; letter-spacing: 0.08em; text-transform: uppercase; white-space: nowrap; }
+    .chip[data-kind="published"] { border-color: var(--green); color: var(--green); }
+    a.chip:hover { background: var(--green); color: var(--surface); }
+    .chip[data-kind="error"], .chip[data-kind="unknown"] { border-color: var(--red); color: var(--red); }
+    .draft-actions { display: flex; gap: 0.45rem; }
+    .spec-rows { display: grid; gap: 0.45rem; margin-top: 0.4rem; }
+    .spec-row { display: grid; grid-template-columns: minmax(0, 0.8fr) minmax(0, 1.2fr) auto; gap: 0.45rem; align-items: center; }
+    .spec-row input[type="text"] { padding: 0.5rem 0.6rem; font-size: 0.9rem; }
+    .unmapped-note { border-left: 3px solid var(--gold-ink); padding: 0.6rem 0.75rem; background: var(--surface-2); font-size: 0.88rem; }
+    .unmapped-note strong { color: var(--ink); }
+    @media (max-width: 560px) { .draft-row { grid-template-columns: 48px minmax(0, 1fr); } .draft-thumb { width: 48px; height: 48px; } .draft-actions { grid-column: 1 / -1; } .spec-row { grid-template-columns: 1fr 1fr; } .spec-row button { grid-column: 1 / -1; justify-self: start; } }
     .form-note { border: 1px dashed var(--gold-ink); border-radius: var(--radius); padding: 1rem; margin-top: 1.25rem; background: var(--surface-2); }
     .copy-mode-note { border-color: var(--blue); }
     #publish-panel[hidden] { display: none; }
@@ -440,6 +462,15 @@ function renderPage(boot: GuiBootState): string {
         <span class="eyebrow">02 / Market</span>
         <h2>Draft summary</h2>
         <div id="summary"><p class="muted">Build a draft to see pricing and comparisons.</p></div>
+      </section>
+    </div>
+    <div class="wrap">
+      <section id="drafts-panel" class="card" aria-labelledby="drafts-heading">
+        <div class="drafts-head">
+          <div><span class="eyebrow">Saved</span><h2 id="drafts-heading">Drafts</h2></div>
+          <button id="refresh-drafts" class="secondary small" type="button">Refresh</button>
+        </div>
+        <div id="drafts-list" class="drafts-list"><p class="muted">Loading drafts...</p></div>
       </section>
     </div>
     <div class="wrap">
@@ -556,7 +587,7 @@ async function savePhoto(file: File, dir: string, index: number): Promise<Upload
 }
 
 function isSafeDraftId(value: string): boolean {
-  return GUI_DIR_RE.test(value);
+  return isGuiDraftId(value);
 }
 
 function draftRecordPath(draftId: string): string {
@@ -565,6 +596,7 @@ function draftRecordPath(draftId: string): string {
 }
 
 async function persistDraft(record: DraftRecord): Promise<void> {
+  if (deletedDrafts.has(record.draftId)) return;
   const dir = await ensureDraftDir(record.draftId);
   const temporaryPath = join(dir, `.draft-${randomUUID()}.tmp`);
   const metadata = JSON.stringify(record, null, 2);
@@ -590,6 +622,7 @@ function serializedRecord(record: DraftRecord): Record<string, unknown> {
     publishResults: record.publishResults,
     ebay: record.ebay,
     guiSkuPrefix: record.guiSkuPrefix,
+    unmapped: unmappedByMarket(record.draft),
   };
 }
 
@@ -627,9 +660,13 @@ async function loadDraftRecords(): Promise<void> {
       };
       const present: UploadedPhoto[] = [];
       for (const photo of record.photos) {
-        const info = await stat(photo.path);
-        const target = await realpath(photo.path);
-        if (info.isFile() && target.startsWith(root)) present.push(photo);
+        try {
+          const info = await stat(photo.path);
+          const target = await realpath(photo.path);
+          if (info.isFile() && target.startsWith(root)) present.push(photo);
+        } catch {
+          // A photo that is gone drops out; the draft (and any live-listing record in it) still opens.
+        }
       }
       record.photos = present;
       record.photoPaths = present.map((photo) => photo.path);
@@ -639,11 +676,6 @@ async function loadDraftRecords(): Promise<void> {
       // removed by TTL cleanup; it must not prevent the GUI from starting.
     }
   }
-}
-
-/** A draft whose Depop-style tab may still be live or unverified is never swept (O7): Sam has to mark it first. */
-function hasUnresolvedMarket(results: unknown): boolean {
-  return Array.isArray(results) && results.some((r) => r && (r.status === "unknown" || r.status === "filling"));
 }
 
 export async function cleanupExpiredDrafts(now = Date.now()): Promise<void> {
@@ -659,7 +691,7 @@ export async function cleanupExpiredDrafts(now = Date.now()): Promise<void> {
     try {
       const raw = await readFile(draftRecordPath(entry.name), "utf8");
       const parsed = JSON.parse(raw) as Partial<DraftRecord>;
-      if (hasUnresolvedMarket(parsed.publishResults)) continue;
+      if (keepFromSweep(parsed.publishResults)) continue;
       timestamp = Date.parse(parsed.updatedAt ?? parsed.createdAt ?? "");
     } catch {
       try {
@@ -1000,6 +1032,35 @@ async function handleMark(req: IncomingMessage, draftId: string, res: ServerResp
   sendJson(res, 200, { publishResults: record.publishResults, changes: out.changes });
 }
 
+/** The Drafts list: every draft in the in-memory store (the same records open/publish/mark use), newest first. */
+function handleListDrafts(res: ServerResponse): void {
+  sendJson(res, 200, { drafts: draftListRows(drafts.values()) });
+}
+
+/** Removes a draft's stored folder. The client confirms first; a live eBay listing is not ended by this. */
+async function handleDeleteDraft(draftId: string, res: ServerResponse): Promise<void> {
+  if (!isSafeDraftId(draftId)) throw new HttpError(400, "Invalid draft id.");
+  const record = drafts.get(draftId);
+  if (!record) {
+    sendJson(res, 404, { error: "Draft not found or expired." });
+    return;
+  }
+  if (activePublishes.has(draftId)) throw new HttpError(409, "This draft is being published. Wait for the result before deleting it.");
+  const root = resolve(DATA_DIR);
+  const dir = resolve(root, draftId);
+  if (!dir.startsWith(`${root}${sep}`)) throw new HttpError(400, "Invalid draft id.");
+  deletedDrafts.add(draftId);
+  drafts.delete(draftId);
+  try {
+    await rm(dir, { recursive: true, force: true });
+  } catch (error) {
+    deletedDrafts.delete(draftId);
+    drafts.set(draftId, record);
+    throw error;
+  }
+  sendJson(res, 200, { deleted: draftId });
+}
+
 async function handleDraftPhoto(res: ServerResponse, draftId: string, indexStr: string): Promise<void> {
   const record = drafts.get(draftId);
   if (!record) {
@@ -1160,6 +1221,10 @@ export async function startGui(port = Number(process.env.GUI_PORT ?? "3000")): P
         await handleDraft(req, res);
         return;
       }
+      if (method === "GET" && url.pathname === "/api/drafts") {
+        handleListDrafts(res);
+        return;
+      }
       if (method === "POST" && url.pathname === "/api/publish") {
         await handlePublish(req, boot, res);
         return;
@@ -1178,6 +1243,10 @@ export async function startGui(port = Number(process.env.GUI_PORT ?? "3000")): P
         }
         if (parts.length === 3 && method === "PATCH") {
           await handleDraftEdit(req, draftId, res);
+          return;
+        }
+        if (parts.length === 3 && method === "DELETE") {
+          await handleDeleteDraft(draftId, res);
           return;
         }
         if (parts.length === 4 && parts[3] === "mark" && method === "POST") {

@@ -56,6 +56,34 @@ function editablePrice(value: unknown, allowZero: boolean): number {
   return Math.round(value * 100) / 100;
 }
 
+// Sanity bounds for hand-edited eBay item specifics; eBay's own limits still apply at publish.
+const MAX_SPECIFICS = 60;
+const MAX_SPECIFIC_VALUES = 30;
+const MAX_SPECIFIC_TEXT = 100;
+
+/** The whole eBay item-specifics map as Sam left it: names and values trimmed, empty values dropped, a name with none removed. */
+function editableItemSpecifics(value: unknown): Record<string, string[]> {
+  if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("eBay item specifics must be an object.");
+  const entries = Object.entries(value as Record<string, unknown>);
+  if (entries.length > MAX_SPECIFICS) throw new Error(`eBay accepts at most ${MAX_SPECIFICS} item specifics here.`);
+  // No prototype: a specific named "constructor" or "__proto__" is just a name.
+  const out: Record<string, string[]> = Object.create(null);
+  for (const [rawName, rawValues] of entries) {
+    const name = rawName.trim();
+    if (!name) throw new Error("An eBay item specific name cannot be empty.");
+    if (name.length > MAX_SPECIFIC_TEXT) throw new Error(`eBay item specific "${name.slice(0, 40)}" has a name that is too long.`);
+    if (!Array.isArray(rawValues) || rawValues.some((v) => typeof v !== "string")) {
+      throw new Error(`eBay item specific "${name}" must be a list of text values.`);
+    }
+    const values = (rawValues as string[]).map((v) => v.trim()).filter(Boolean);
+    if (values.length > MAX_SPECIFIC_VALUES) throw new Error(`eBay item specific "${name}" has too many values.`);
+    if (values.some((v) => v.length > MAX_SPECIFIC_TEXT)) throw new Error(`eBay item specific "${name}" has a value that is too long.`);
+    if (!values.length) continue;
+    out[name] = [...new Set([...(out[name] ?? []), ...values])];
+  }
+  return out;
+}
+
 /**
  * Merge only fields the review UI is allowed to edit into a server-owned
  * DraftBundle. Unknown fields are deliberately ignored; malformed editable
@@ -96,6 +124,12 @@ export function mergeEditableListingFields(
         throw new Error("eBay categoryId must be a numeric category id.");
       }
       listing.categoryId = categoryId;
+    }
+    if (Object.hasOwn(input, "itemSpecifics")) {
+      if (input.platform !== "ebay") throw new Error("Only eBay has item specifics.");
+      const specifics = editableItemSpecifics(input.itemSpecifics);
+      if (Object.keys(specifics).length) listing.itemSpecifics = specifics;
+      else delete listing.itemSpecifics;
     }
   }
 

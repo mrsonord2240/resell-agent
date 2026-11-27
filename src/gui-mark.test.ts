@@ -140,7 +140,7 @@ try {
   await cleanupExpiredDrafts(Date.now() + GUI_DRAFT_TTL_MS * 10);
   assert.ok(existsSync(join(dir, sweep.unknown)), "unknown draft kept");
   assert.ok(existsSync(join(dir, sweep.filling)), "filling draft kept");
-  assert.ok(!existsSync(join(dir, sweep.published)), "published draft expires");
+  assert.ok(existsSync(join(dir, sweep.published)), "published draft kept (record of a live listing)");
   assert.ok(!existsSync(join(dir, sweep.plain)), "draft with no results expires");
   console.log("gui-mark.test ok");
 } finally {
