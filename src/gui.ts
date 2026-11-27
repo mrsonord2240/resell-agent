@@ -16,7 +16,7 @@ import {
   type FillRecorder,
   type PlatformPublishResult,
 } from "./publish.js";
-import { applyMark, CliError, type MarkAction } from "./draft-file.js";
+import { applyMark, CliError, settleFill, type MarkAction } from "./draft-file.js";
 import { expectedHost, isExpectedPlatformUrl } from "./browser-automation.js";
 import { prefillStock, RESELL_DIR, type PrefillStock } from "./batch.js";
 import { lazyDepopSession } from "./depop-fill.js";
@@ -879,7 +879,7 @@ async function handleDraftEdit(req: IncomingMessage, draftId: string, res: Serve
 }
 
 /** A GUI Depop fill writes `filling` before its tab waits, so a GUI that dies mid-wait leaves verify-first, not a re-fill. */
-function guiFillRecorder(record: DraftRecord): FillRecorder {
+export function guiFillRecorder(record: DraftRecord): FillRecorder {
   return {
     async begin(platform) {
       const stored = record.publishResults.find((r) => r.platform === platform);
@@ -893,13 +893,9 @@ function guiFillRecorder(record: DraftRecord): FillRecorder {
       return { attemptId };
     },
     // handlePublish merges every result once the run ends. A mark Sam made while the tab waited stands (E7),
-    // unless the Post was seen, which then needs verifying.
-    finish: async (platform, attemptId, result, opts) => {
-      const stored = record.publishResults.find((r) => r.platform === platform);
-      if (stored && stored.status === "filling" && stored.attemptId === attemptId) return result;
-      if (!stored || stored.status === "filling") return { ...result, status: "unknown" as const };
-      return opts.submitSeen ? { ...stored, status: "unknown" as const, url: result.url ?? stored.url, message: `${platform}: marked by hand, but a Post was seen; verify the listing.` } : stored;
-    },
+    // unless the Post was seen (shared settleFill with the CLI).
+    finish: async (platform, attemptId, result, opts) =>
+      settleFill(platform, record.publishResults.find((r) => r.platform === platform), attemptId, result, opts.submitSeen),
   };
 }
 

@@ -10,12 +10,14 @@ process.env.GUI_DATA_DIR = dir;
 process.env.GUI_ALLOW_REMOTE = "";
 process.env.GUI_HOST = "";
 
-const { startGui, cleanupExpiredDrafts, GUI_DRAFT_TTL_MS } = await import("./gui.js");
+const { startGui, cleanupExpiredDrafts, guiFillRecorder, GUI_DRAFT_TTL_MS } = await import("./gui.js");
 
 const ids = {
   unknown: "a0000000-0000-4000-8000-000000000001",
   filling: "a0000000-0000-4000-8000-000000000002",
   pubMark: "a0000000-0000-4000-8000-000000000005",
+  settleA: "a0000000-0000-4000-8000-000000000008",
+  settleB: "a0000000-0000-4000-8000-000000000009",
   heldMark: "a0000000-0000-4000-8000-000000000007",
   notPosted: "a0000000-0000-4000-8000-000000000006",
 };
@@ -43,6 +45,8 @@ fixture(sweep.filling, [depop("filling", { attemptId: "att-2" })]);
 fixture(sweep.published, [depop("published", { url: "https://www.depop.com/products/z/" })]);
 fixture(sweep.plain, []);
 fixture(ids.pubMark, [depop("published", { url: "https://www.depop.com/products/y/" })]);
+fixture(ids.settleA, [depop("unknown")]);
+fixture(ids.settleB, [depop("unknown")]);
 fixture(ids.heldMark, [depop("held")]);
 fixture(ids.notPosted, [depop("unknown")]);
 
@@ -100,6 +104,38 @@ try {
     body: JSON.stringify({ market: "depop", action: "not_posted" }),
   });
   assert.equal(res.status, 401, "token check applies");
+  // The fill recorder settles like the CLI: a mark made during the wait stands unless a Post was seen.
+  for (const submitSeen of [false, true]) {
+    const id = submitSeen ? ids.settleB : ids.settleA;
+    const rec = { draftId: id, draft: {}, photos: [], photoPaths: [], createdAt: "", updatedAt: "", publishResults: [] as any[] };
+    const recorder = guiFillRecorder(rec as never);
+    const begun = await recorder.begin("depop");
+    assert.ok("attemptId" in begun);
+    assert.equal(rec.publishResults[0].status, "filling");
+    const attemptId = (begun as { attemptId: string }).attemptId;
+    const marked = await (await mark(id, { market: "depop", action: "posted", url: "https://www.depop.com/products/m/" })).json() as { publishResults: any[] };
+    rec.publishResults = marked.publishResults; // the server's record is separate; mirror what Sam's mark stored
+    const done = { platform: "depop" as const, status: "published" as const, message: "tab posted", url: "https://www.depop.com/products/tab/" };
+    const out = await recorder.finish("depop", attemptId, done, { submitSeen });
+    if (submitSeen) {
+      assert.equal(out.status, "unknown");
+      assert.match(out.message, /Verify the listing/);
+      assert.equal(out.attemptId, attemptId);
+      assert.equal(out.url, done.url);
+    } else {
+      assert.equal(out.status, "published");
+      assert.equal(out.url, "https://www.depop.com/products/m/", "Sam's mark stands");
+    }
+  }
+  // A different attempt owns the entry: verify first, with the message and attempt id.
+  {
+    const rec = { draftId: ids.unknown, draft: {}, photos: [], photoPaths: [], createdAt: "", updatedAt: "", publishResults: [{ platform: "depop", status: "filling", message: "x", attemptId: "other" }] as any[] };
+    const out = await guiFillRecorder(rec as never).finish("depop", "mine", { platform: "depop", status: "published", message: "ok", url: "https://www.depop.com/products/t/" }, { submitSeen: true });
+    assert.equal(out.status, "unknown");
+    assert.match(out.message, /different fill attempt/);
+    assert.equal(out.attemptId, "mine");
+  }
+
   // TTL: with every draft long expired, only the unresolved ones survive (run last: it also sweeps the mark fixtures).
   await cleanupExpiredDrafts(Date.now() + GUI_DRAFT_TTL_MS * 10);
   assert.ok(existsSync(join(dir, sweep.unknown)), "unknown draft kept");

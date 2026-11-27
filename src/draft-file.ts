@@ -240,7 +240,7 @@ function verifyFirst(platform: BrowserMarket, attemptId: string, result: Platfor
 }
 
 /** Which entry a finished fill leaves on disk, given the entry stored now (E7, E11). */
-function settleFill(
+export function settleFill(
   platform: BrowserMarket,
   stored: PlatformPublishResult | undefined,
   attemptId: string,
